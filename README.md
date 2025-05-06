@@ -1,6 +1,6 @@
 # 📚 Easy-NotebookLM
 
-[English] | [中文](README_zh.md)
+[English] | [中文](./README_zn.md)
 
 **Easy-NotebookLM** is a tool designed to generate Chinese podcasts based on the concept of Google's NotebookLM. It transforms content from PDF documents into natural, conversational-style podcast audio and supports multiple dialogue styles. Currently, it uses the [DeepSeek-v3](https://platform.deepseek.com/) API for model inference, though you can replace it with any other compatible model interface. For speech synthesis, it leverages the **CosyVoice** model.
 
@@ -104,8 +104,6 @@ python notelm_react.py --input sample.pdf --output_dir ./output --count 5
 ## 🤝 Contributing
 
 All contributions are welcome! Whether it's feature suggestions, bug reports, or pull requests — we'd love to hear from you!
-
-For more details, please read our [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
