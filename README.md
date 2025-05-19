@@ -115,8 +115,8 @@ This project is licensed under the [Apache 2.0 License](LICENSE).
 
 ## ❤️ Acknowledgments
 
-- Inspired by [Google NotebookLM](https://notebooklm.withgoogle.com/)
-- Thanks to [open-notebooklm](https://github.com/lfnovo/open-notebook) for reference implementation ideas
+- Inspired by [Google NotebookLM](https://notebooklm.google/)
+- Thanks to [open-notebooklm](https://github.com/gabrielchua/open-notebooklm) for reference implementation ideas
 - Powered by [DeepSeek](https://platform.deepseek.com/) and [CosyVoice](https://github.com/FunAudioLLM/CosyVoice)
 
 ---
