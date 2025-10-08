@@ -1,6 +1,6 @@
 # 📚 Easy-NotebookLM
 
-[English](./README.md) | 中文
+中文 | [English](./README.md)
 
 **Easy-NotebookLM** 是一个基于 Google NotebookLM 思路实现的中文播客生成工具。它能够将 PDF 文档内容转化为自然对话形式的中文播客音频，并支持多种对话风格。目前模型推理使用的是 [DeepSeek-v3](https://platform.deepseek.com/) API，也可以替换为任意具备相同能力的模型接口；语音合成部分则采用了 **CosyVoice** 模型。
 
