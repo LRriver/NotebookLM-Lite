@@ -1,4 +1,4 @@
-# 📚 Easy-NotebookLM
+# 📚 NotebookLM-Lite
 
 中文 | [English](./README.md)
 
