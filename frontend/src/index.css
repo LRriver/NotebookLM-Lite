@@ -1,0 +1,63 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Outfit', sans-serif;
+  @apply bg-slate-950 text-slate-100 antialiased overflow-x-hidden;
+  background-color: #0f172a;
+  background-image:
+    radial-gradient(circle at 0% 0%, rgba(56, 189, 248, 0.15), transparent 50%),
+    radial-gradient(circle at 100% 0%, rgba(139, 92, 246, 0.15), transparent 50%),
+    radial-gradient(circle at 100% 100%, rgba(56, 189, 248, 0.15), transparent 50%),
+    radial-gradient(circle at 0% 100%, rgba(139, 92, 246, 0.15), transparent 50%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+.glass-panel {
+  @apply bg-slate-900/40 backdrop-blur-xl border border-white/10 shadow-2xl relative overflow-hidden transition-all duration-300 hover:bg-slate-900/50 hover:border-white/20;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+}
+
+.glass-panel::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+}
+
+.tech-border {
+  @apply border border-white/10;
+}
+
+.input-field {
+  @apply w-full bg-black/20 border border-white/10 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 transition-all duration-200 font-sans text-base backdrop-blur-sm;
+}
+
+.label-text {
+  @apply block text-sm font-medium text-slate-400 mb-2 tracking-wide;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
