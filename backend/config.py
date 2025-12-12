@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     vector_store_type: Literal["chroma", "faiss"] = "chroma"
     chroma_persist_dir: str = "./data/chroma"
     
-    # 嵌入模型设置
-    embedding_model: str = "all-MiniLM-L6-v2"
+    # 嵌入模型设置 (OpenAI API)
+    embedding_model: str = "text-embedding-3-small"
     
     # 文件上传设置
     upload_dir: str = "./uploads"

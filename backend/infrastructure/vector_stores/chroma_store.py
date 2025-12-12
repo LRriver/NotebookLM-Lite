@@ -2,19 +2,21 @@
 ChromaDB Vector Store Implementation
 
 Implements VectorStoreInterface using ChromaDB for persistent vector storage.
+Uses OpenAI Embedding API instead of local sentence-transformers.
 """
 from typing import List, Optional, Dict, Any
 from ...core.interfaces.vector_store import VectorStoreInterface
 
 
 class ChromaVectorStore(VectorStoreInterface):
-    """ChromaDB 向量存储实现"""
+    """ChromaDB 向量存储实现（使用 OpenAI Embedding API）"""
     
     def __init__(
         self, 
         persist_dir: str = "./data/chroma",
         collection_name: str = "documents",
-        embedding_model: str = "all-MiniLM-L6-v2"
+        embedding_model: str = "text-embedding-3-small",
+        api_key: Optional[str] = None
     ):
         """
         初始化 ChromaDB 存储
@@ -22,7 +24,8 @@ class ChromaVectorStore(VectorStoreInterface):
         Args:
             persist_dir: 持久化目录
             collection_name: 集合名称
-            embedding_model: 嵌入模型名称
+            embedding_model: OpenAI 嵌入模型名称
+            api_key: OpenAI API Key（可选，从环境变量读取）
         """
         import chromadb
         from chromadb.config import Settings
@@ -30,6 +33,7 @@ class ChromaVectorStore(VectorStoreInterface):
         self.persist_dir = persist_dir
         self.collection_name = collection_name
         self.embedding_model_name = embedding_model
+        self._api_key = api_key
         
         # 初始化 ChromaDB 客户端
         self.client = chromadb.PersistentClient(
@@ -43,16 +47,37 @@ class ChromaVectorStore(VectorStoreInterface):
             metadata={"hnsw:space": "cosine"}
         )
         
-        # 延迟加载嵌入模型
-        self._encoder = None
+        # 延迟加载 OpenAI 客户端
+        self._openai_client = None
     
     @property
-    def encoder(self):
-        """延迟加载嵌入模型"""
-        if self._encoder is None:
-            from sentence_transformers import SentenceTransformer
-            self._encoder = SentenceTransformer(self.embedding_model_name)
-        return self._encoder
+    def openai_client(self):
+        """延迟加载 OpenAI 客户端"""
+        if self._openai_client is None:
+            import openai
+            import os
+            api_key = self._api_key or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OpenAI API Key is required for embeddings")
+            self._openai_client = openai.OpenAI(api_key=api_key)
+        return self._openai_client
+    
+    def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """使用 OpenAI API 生成嵌入向量"""
+        if not texts:
+            return []
+        
+        # 过滤空文本
+        texts = [t if t else " " for t in texts]
+        
+        response = self.openai_client.embeddings.create(
+            model=self.embedding_model_name,
+            input=texts
+        )
+        
+        # 按 index 排序确保顺序正确
+        embeddings = sorted(response.data, key=lambda x: x.index)
+        return [e.embedding for e in embeddings]
     
     async def add_chunks(
         self, 
@@ -69,7 +94,7 @@ class ChromaVectorStore(VectorStoreInterface):
         
         # 生成或使用提供的嵌入
         if embeddings is None:
-            embeddings = self.encoder.encode(contents).tolist()
+            embeddings = self._get_embeddings(contents)
         
         # 准备 ID 和元数据
         ids = [f"{doc_id}_chunk_{i}" for i in range(len(chunks))]
@@ -97,7 +122,7 @@ class ChromaVectorStore(VectorStoreInterface):
     ) -> List[Dict[str, Any]]:
         """语义搜索相关文档块"""
         # 生成查询向量
-        query_embedding = self.encoder.encode([query]).tolist()
+        query_embedding = self._get_embeddings([query])
         
         # 构建过滤条件
         where = None
@@ -177,5 +202,6 @@ class ChromaVectorStore(VectorStoreInterface):
             "total_chunks": count,
             "total_documents": len(doc_ids),
             "collection_name": self.collection_name,
-            "persist_dir": self.persist_dir
+            "persist_dir": self.persist_dir,
+            "embedding_model": self.embedding_model_name
         }
