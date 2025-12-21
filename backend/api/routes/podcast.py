@@ -41,7 +41,9 @@ async def generate_podcast(
         tts_api_key = request.tts_api_key or request.llm_api_key
         tts = get_tts_provider(
             provider=request.tts_provider,
-            api_key=tts_api_key
+            api_key=tts_api_key,
+            base_url=request.tts_base_url,
+            model=request.tts_model
         )
         
         # 创建播客服务
