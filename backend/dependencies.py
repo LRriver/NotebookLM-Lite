@@ -66,7 +66,7 @@ class DependencyContainer:
         Args:
             provider: 提供商类型 ("openai" | "google")
             api_key: API 密钥
-            base_url: 可选的 API 基础 URL（用于兼容接口）
+            base_url: 可选的 API 基础 URL（用于兼容接口/代理）
             model: 模型名称
             
         Returns:
@@ -83,6 +83,7 @@ class DependencyContainer:
             from .infrastructure.llm_providers.google_provider import GoogleLLMProvider
             return GoogleLLMProvider(
                 api_key=api_key,
+                base_url=base_url,  # Now supports custom base URL
                 model=model or "gemini-pro"
             )
         else:
