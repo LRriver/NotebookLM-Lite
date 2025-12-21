@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, User, Bot, Loader2, MoreHorizontal, Sparkles } from 'lucide-react';
+import { Send, Sparkles, MoreHorizontal } from 'lucide-react';
 import type { ApiConfig } from '../App';
+import { useLanguage, translations } from '../App';
 
 interface Message {
     id: string;
@@ -15,41 +16,23 @@ interface ChatPanelProps {
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({ documentIds, config }) => {
+    const { lang } = useLanguage();
+    const t = translations[lang];
+
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
-    const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-    const scrollToBottom = () => {
+    useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    };
-
-    useEffect(() => {
-        scrollToBottom();
     }, [messages]);
-
-    // Auto-resize textarea
-    useEffect(() => {
-        if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
-            textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 120) + 'px';
-        }
-    }, [input]);
 
     const sendMessage = async () => {
         if (!input.trim() || isLoading) return;
-        if (!config.textApiKey) {
-            alert('请先在设置中配置文本模型 API Key');
-            return;
-        }
+        if (!config.textApiKey) return alert(lang === 'zh' ? '请先配置 API Key' : 'Please configure Text Model API Key settings first.');
 
-        const userMessage: Message = {
-            id: Date.now().toString(),
-            role: 'user',
-            content: input.trim()
-        };
-
+        const userMessage: Message = { id: Date.now().toString(), role: 'user', content: input.trim() };
         setMessages(prev => [...prev, userMessage]);
         setInput('');
         setIsLoading(true);
@@ -69,141 +52,110 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ documentIds, config }) => 
                 })
             });
 
-            if (!response.ok) throw new Error('请求失败');
-
+            if (!response.ok) throw new Error('Request failed');
             const data = await response.json();
-            const assistantMessage: Message = {
+            setMessages(prev => [...prev, {
                 id: (Date.now() + 1).toString(),
                 role: 'assistant',
                 content: data.answer,
                 sources: data.sources
-            };
-
-            setMessages(prev => [...prev, assistantMessage]);
-        } catch (error) {
+            }]);
+        } catch {
             setMessages(prev => [...prev, {
                 id: (Date.now() + 1).toString(),
                 role: 'assistant',
-                content: '抱歉，处理请求时出现错误。请检查配置并重试。'
+                content: lang === 'zh' ? '抱歉，出了点问题。请检查您的配置。' : 'Sorry, something went wrong. Please check your configuration.'
             }]);
         } finally {
             setIsLoading(false);
         }
     };
 
-    const handleKeyPress = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage();
-        }
-    };
-
     return (
-        <div className="flex flex-col h-full">
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-light)] bg-white">
-                <div className="flex items-center gap-2">
-                    <h2 className="font-semibold text-[var(--warm-800)]">对话</h2>
-                    <span className="text-xs text-[var(--warm-400)]">
-                        {documentIds.length > 0 ? `基于 ${documentIds.length} 个文档` : '上传文档开始对话'}
-                    </span>
-                </div>
-                <button className="p-2 hover:bg-[var(--bg-hover)] rounded-lg transition-colors">
-                    <MoreHorizontal className="w-5 h-5 text-[var(--warm-400)]" />
+        <>
+            <div className="panel-header">
+                <h2>{t.chat}</h2>
+                <button className="text-xs font-medium text-orange-600 bg-orange-50 px-3 py-1 rounded-full hover:bg-orange-100 transition shadow-sm">
+                    {lang === 'zh' ? '新对话' : 'New Chat'}
                 </button>
             </div>
 
-            {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                {messages.length === 0 && (
-                    <div className="flex flex-col items-center justify-center h-full text-center">
-                        <div className="w-16 h-16 mb-4 rounded-2xl bg-gradient-to-br from-amber-100 to-orange-100 flex items-center justify-center">
-                            <Sparkles className="w-8 h-8 text-[var(--primary-500)]" />
+            <div className="panel-body flex flex-col">
+                <div className="flex-1 overflow-y-auto pb-4 space-y-6 bg-gradient-to-b from-transparent to-[#FFFBF7]">
+                    {messages.length === 0 && (
+                        <div className="h-full flex flex-col items-center justify-center p-8 text-center">
+                            <Sparkles className="w-12 h-12 text-orange-300 mb-3" />
+                            <h3 className="text-3xl font-bold text-orange-800/50">{t.startChat}</h3>
+                            <p className="text-sm text-gray-400 mt-2 max-w-xs">
+                                {lang === 'zh' ? '上传文档以开始分析和提问' : 'Upload documents to start analyzing and asking questions.'}
+                            </p>
                         </div>
-                        <h3 className="text-lg font-semibold text-[var(--warm-700)] mb-2">
-                            开始对话
-                        </h3>
-                        <p className="text-sm text-[var(--warm-400)] max-w-md">
-                            上传文档后，可以基于文档内容进行问答。支持多轮对话和上下文理解。
-                        </p>
-                    </div>
-                )}
+                    )}
 
-                {messages.map((message) => (
-                    <div
-                        key={message.id}
-                        className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                    >
-                        <div className={`flex max-w-[75%] ${message.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                            <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${message.role === 'user'
-                                    ? 'bg-gradient-to-br from-amber-400 to-orange-500 ml-3'
-                                    : 'bg-[var(--warm-100)] mr-3'
-                                }`}>
-                                {message.role === 'user'
-                                    ? <User className="w-4 h-4 text-white" />
-                                    : <Bot className="w-4 h-4 text-[var(--warm-600)]" />
-                                }
-                            </div>
-                            <div className={`message ${message.role === 'user' ? 'message-user' : 'message-assistant'}`}>
-                                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-
+                    {messages.map((message) => (
+                        <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                            <div className={`max-w-[85%] ${message.role === 'user'
+                                ? 'bg-gradient-to-br from-[#D97706] to-[#EA580C] text-white px-6 py-4 rounded-2xl rounded-tr-none shadow-lg shadow-orange-500/10'
+                                : 'bg-[#F3F4F6] text-slate-800 px-6 py-5 rounded-2xl rounded-tl-none shadow-sm border border-gray-100'}`}>
+                                <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{message.content}</p>
                                 {message.sources && message.sources.length > 0 && (
-                                    <div className="mt-3 pt-3 border-t border-[var(--border-light)]">
-                                        <p className="text-xs text-[var(--warm-500)] mb-2">📚 参考来源:</p>
-                                        {message.sources.slice(0, 2).map((source, idx) => (
-                                            <p key={idx} className="text-xs text-[var(--warm-500)] bg-[var(--warm-50)] p-2 rounded mt-1 line-clamp-2">
-                                                {source.content}
-                                            </p>
-                                        ))}
+                                    <div className="mt-3 pt-3 border-t border-gray-100/20">
+                                        <p className="text-[10px] uppercase tracking-wider opacity-70 mb-1">Sources</p>
+                                        <div className="flex gap-1 flex-wrap">
+                                            {message.sources.slice(0, 2).map((s, i) => (
+                                                <span key={i} className="text-[10px] bg-black/5 px-2 py-1 rounded truncate max-w-[150px]">
+                                                    {s.content.slice(0, 50)}...
+                                                </span>
+                                            ))}
+                                        </div>
                                     </div>
                                 )}
                             </div>
                         </div>
-                    </div>
-                ))}
+                    ))}
 
-                {isLoading && (
-                    <div className="flex justify-start">
-                        <div className="flex items-center bg-white border border-[var(--border-light)] rounded-2xl px-4 py-3">
-                            <Loader2 className="w-4 h-4 animate-spin text-[var(--primary-500)]" />
-                            <span className="ml-2 text-sm text-[var(--warm-500)]">思考中...</span>
+                    {isLoading && (
+                        <div className="flex justify-start">
+                            <div className="bg-white border border-gray-100 rounded-2xl rounded-bl-sm px-4 py-3 flex items-center gap-2 shadow-sm">
+                                <div className="flex gap-1">
+                                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0s' }} />
+                                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
+                                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }} />
+                                </div>
+                            </div>
                         </div>
-                    </div>
-                )}
+                    )}
+                    <div ref={messagesEndRef} />
+                </div>
 
-                <div ref={messagesEndRef} />
-            </div>
-
-            {/* Input Area */}
-            <div className="p-4 border-t border-[var(--border-light)] bg-white">
-                <div className="flex items-end gap-3 max-w-4xl mx-auto">
-                    <div className="flex-1 relative">
-                        <textarea
-                            ref={textareaRef}
+                {/* Input Area */}
+                <div className="pt-4 border-t border-gray-100">
+                    <div className="relative shadow-lg rounded-full">
+                        <input
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
-                            onKeyPress={handleKeyPress}
-                            placeholder="开始输入..."
-                            rows={1}
-                            className="input resize-none pr-12"
-                            style={{ minHeight: '44px' }}
+                            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), sendMessage())}
+                            placeholder={t.inputPlaceholder}
+                            className="w-full pl-6 pr-14 py-4 bg-white border border-gray-200 rounded-full focus:outline-none focus:ring-2 focus:ring-orange-200 focus:border-orange-300 transition-all placeholder:text-gray-400"
                         />
-                        <span className="absolute right-3 bottom-3 text-xs text-[var(--warm-400)]">
-                            {documentIds.length} 个来源
-                        </span>
+                        <button
+                            onClick={sendMessage}
+                            disabled={!input.trim() || isLoading}
+                            className={`absolute right-2 top-2 p-2.5 rounded-full transition-all shadow-md flex items-center justify-center ${input.trim()
+                                    ? 'bg-orange-600 hover:bg-orange-700 text-white hover:shadow-lg active:scale-95'
+                                    : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                                }`}
+                        >
+                            <Send size={18} className="ml-0.5" />
+                        </button>
                     </div>
-                    <button
-                        onClick={sendMessage}
-                        disabled={!input.trim() || isLoading}
-                        className={`flex items-center justify-center w-11 h-11 rounded-xl transition-all ${input.trim() && !isLoading
-                                ? 'bg-gradient-to-br from-amber-400 to-orange-500 text-white shadow-lg shadow-orange-200 hover:shadow-xl hover:shadow-orange-300'
-                                : 'bg-[var(--warm-100)] text-[var(--warm-400)] cursor-not-allowed'
-                            }`}
-                    >
-                        <Send className="w-5 h-5" />
-                    </button>
+                    {documentIds.length > 0 && (
+                        <div className="text-center mt-2 text-xs text-gray-400">
+                            {documentIds.length} {lang === 'zh' ? '个来源已激活' : 'sources active'}
+                        </div>
+                    )}
                 </div>
             </div>
-        </div>
+        </>
     );
 };
