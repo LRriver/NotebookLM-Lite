@@ -32,6 +32,8 @@ class PodcastGenerateRequest(BaseModel):
     # TTS 配置
     tts_provider: str = Field(default="openai")
     tts_api_key: Optional[str] = None
+    tts_base_url: Optional[str] = Field(None, description="TTS API 基础 URL（用于 OpenAI 兼容接口）")
+    tts_model: Optional[str] = Field(None, description="TTS 模型名称")
 
 
 class PodcastGenerateResponse(BaseModel):
