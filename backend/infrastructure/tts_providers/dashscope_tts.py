@@ -2,15 +2,16 @@
 Dashscope TTS Provider Implementation
 
 Uses Alibaba's Dashscope CosyVoice for Chinese TTS.
+Supports user-configurable model name.
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from io import BytesIO
 from pydub import AudioSegment
 from ...core.interfaces.tts_provider import TTSProviderInterface
 
 
 class DashscopeTTSProvider(TTSProviderInterface):
-    """Dashscope CosyVoice TTS 实现"""
+    """Dashscope CosyVoice TTS 实现 - 支持自定义模型"""
     
     AVAILABLE_VOICES = [
         {"id": "loongstella", "name": "Stella", "gender": "female", "language": "zh"},
@@ -20,16 +21,23 @@ class DashscopeTTSProvider(TTSProviderInterface):
         {"id": "longyue", "name": "Longyue", "gender": "male", "language": "zh"},
     ]
     
-    def __init__(self, api_key: str, **kwargs):
+    def __init__(
+        self, 
+        api_key: str, 
+        model: Optional[str] = None,
+        **kwargs
+    ):
         """
         初始化 Dashscope TTS 提供商
         
         Args:
             api_key: Dashscope API 密钥
+            model: TTS 模型名称（默认 cosyvoice-v1）
         """
         import dashscope
         dashscope.api_key = api_key
         self.api_key = api_key
+        self.model = model or "cosyvoice-v1"
     
     @property
     def provider_name(self) -> str:
@@ -53,7 +61,7 @@ class DashscopeTTSProvider(TTSProviderInterface):
         from dashscope.audio.tts_v2 import SpeechSynthesizer
         
         synthesizer = SpeechSynthesizer(
-            model="cosyvoice-v1",
+            model=self.model,
             voice=voice,
             callback=None
         )
@@ -93,9 +101,9 @@ class DashscopeTTSProvider(TTSProviderInterface):
             # 获取对应音色
             voice = voice_mapping.get(speaker, "loongstella")
             
-            # 合成
+            # 合成 - 使用用户配置的模型
             synthesizer = SpeechSynthesizer(
-                model="cosyvoice-v1",
+                model=self.model,
                 voice=voice,
                 callback=None
             )
