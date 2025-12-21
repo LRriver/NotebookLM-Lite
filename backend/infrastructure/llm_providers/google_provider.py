@@ -1,7 +1,8 @@
 """
 Google GenAI LLM Provider Implementation
 
-Supports Google Gemini models via the google-generativeai SDK.
+Supports Google Gemini models via the google-genai SDK.
+Supports custom base URL for proxy services.
 """
 from typing import Type, TypeVar, List, Optional
 import json
@@ -10,14 +11,18 @@ from ...core.interfaces.llm_provider import LLMProviderInterface
 
 T = TypeVar('T', bound=BaseModel)
 
+# Default Google API endpoint
+DEFAULT_GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com"
+
 
 class GoogleLLMProvider(LLMProviderInterface):
-    """Google GenAI (Gemini) 实现"""
+    """Google GenAI (Gemini) 实现 - 支持自定义 Base URL"""
     
     def __init__(
         self, 
         api_key: str,
-        model: str = "gemini-pro"
+        model: str = "gemini-pro",
+        base_url: Optional[str] = None
     ):
         """
         初始化 Google GenAI 提供商
@@ -25,12 +30,19 @@ class GoogleLLMProvider(LLMProviderInterface):
         Args:
             api_key: API 密钥
             model: 模型名称
+            base_url: 可选的 API 基础 URL（用于代理服务）
         """
-        import google.generativeai as genai
+        from google import genai
         
-        genai.configure(api_key=api_key)
-        self._genai = genai
-        self._model = genai.GenerativeModel(model)
+        # 使用新的 genai.Client 方式，支持自定义 base URL
+        http_options = {}
+        if base_url:
+            http_options['baseUrl'] = base_url
+        
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options=http_options if http_options else None
+        )
         self._model_name = model
     
     @property
@@ -50,20 +62,23 @@ class GoogleLLMProvider(LLMProviderInterface):
         **kwargs
     ) -> str:
         """普通文本生成"""
+        from google.genai import types
+        
         # 构建完整提示
         full_prompt = prompt
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n{prompt}"
         
         # 配置生成参数
-        generation_config = self._genai.types.GenerationConfig(
+        config = types.GenerateContentConfig(
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
         
-        response = await self._model.generate_content_async(
-            full_prompt,
-            generation_config=generation_config
+        response = self._client.models.generate_content(
+            model=self._model_name,
+            contents=full_prompt,
+            config=config
         )
         
         return response.text
@@ -77,6 +92,8 @@ class GoogleLLMProvider(LLMProviderInterface):
         **kwargs
     ) -> T:
         """结构化输出生成"""
+        from google.genai import types
+        
         # Google Gemini 需要在提示中明确要求 JSON 格式
         schema = response_model.model_json_schema()
         schema_str = json.dumps(schema, ensure_ascii=False, indent=2)
@@ -90,14 +107,15 @@ class GoogleLLMProvider(LLMProviderInterface):
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n{structured_prompt}"
         
-        generation_config = self._genai.types.GenerationConfig(
+        config = types.GenerateContentConfig(
             temperature=temperature,
             response_mime_type="application/json",
         )
         
-        response = await self._model.generate_content_async(
-            full_prompt,
-            generation_config=generation_config
+        response = self._client.models.generate_content(
+            model=self._model_name,
+            contents=full_prompt,
+            config=config
         )
         
         # 解析 JSON 响应
