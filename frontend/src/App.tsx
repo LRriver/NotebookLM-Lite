@@ -1,9 +1,69 @@
-import React, { useState } from 'react';
+import React, { useState, createContext, useContext } from 'react';
 import { SourcePanel } from './components/SourcePanel';
 import { ChatPanel } from './components/ChatPanel';
 import { StudioPanel } from './components/StudioPanel';
 import { ConfigModal } from './components/ConfigModal';
-import { Settings, Sparkles } from 'lucide-react';
+import { Settings } from 'lucide-react';
+
+// Language Context
+export type Language = 'zh' | 'en';
+export const LanguageContext = createContext<{ lang: Language; setLang: (l: Language) => void }>({
+    lang: 'zh',
+    setLang: () => { }
+});
+export const useLanguage = () => useContext(LanguageContext);
+
+// Translations
+export const translations = {
+    zh: {
+        sources: '来源',
+        chat: '对话',
+        studio: '工作室',
+        generatedContent: '已生成内容',
+        searchPlaceholder: '搜索来源...',
+        dragDropText: '将文件拖放到此处，或点击选择',
+        addSource: '添加来源',
+        startChat: '开始对话',
+        inputPlaceholder: '询问有关您的文档的问题...',
+        noContent: '暂无生成内容',
+        tools: {
+            podcast: '播客',
+            mindmap: '思维导图',
+            ppt: '演示文稿',
+            faq: '常见问题'
+        },
+        duration: '时长',
+        generatePodcast: '生成播客',
+        quick: '快速',
+        standard: '标准',
+        detailed: '详细',
+        deepDive: '深度'
+    },
+    en: {
+        sources: 'Sources',
+        chat: 'Chat',
+        studio: 'Studio',
+        generatedContent: 'Generated Content',
+        searchPlaceholder: 'Search sources...',
+        dragDropText: 'Drag and drop files here, or click to select',
+        addSource: 'Add Source',
+        startChat: 'Start Chat',
+        inputPlaceholder: 'Ask a question about your documents...',
+        noContent: 'No content generated yet',
+        tools: {
+            podcast: 'Podcast',
+            mindmap: 'Mind Map',
+            ppt: 'PPT',
+            faq: 'FAQ'
+        },
+        duration: 'Duration',
+        generatePodcast: 'Generate Podcast',
+        quick: 'Quick',
+        standard: 'Standard',
+        detailed: 'Detailed',
+        deepDive: 'Deep Dive'
+    }
+};
 
 export interface ApiConfig {
     textProvider: 'openai' | 'google';
@@ -13,6 +73,7 @@ export interface ApiConfig {
     speechProvider: 'openai' | 'dashscope';
     speechApiKey: string;
     speechBaseUrl: string;
+    speechModel: string;
 }
 
 export interface UploadedFile {
@@ -26,7 +87,7 @@ export interface UploadedFile {
 
 export interface GeneratedContent {
     id: string;
-    type: 'podcast' | 'ppt' | 'summary';
+    type: 'podcast' | 'ppt' | 'mindmap';
     title: string;
     createdAt: Date;
     audioUrl?: string;
@@ -34,6 +95,7 @@ export interface GeneratedContent {
 }
 
 function App() {
+    const [lang, setLang] = useState<Language>('zh');
     const [files, setFiles] = useState<UploadedFile[]>([]);
     const [generatedContents, setGeneratedContents] = useState<GeneratedContent[]>([]);
     const [showConfig, setShowConfig] = useState(false);
@@ -41,13 +103,15 @@ function App() {
         textProvider: 'openai',
         textApiKey: '',
         textBaseUrl: '',
-        textModel: 'gpt-4o',
+        textModel: '',
         speechProvider: 'openai',
         speechApiKey: '',
-        speechBaseUrl: ''
+        speechBaseUrl: '',
+        speechModel: ''
     });
 
-    // 获取成功上传的文档ID列表
+    const t = translations[lang];
+
     const documentIds = files
         .filter(f => f.status === 'success' && f.docId)
         .map(f => f.docId!);
@@ -57,68 +121,89 @@ function App() {
     };
 
     return (
-        <div className="h-screen flex flex-col bg-[var(--bg-primary)]">
-            {/* Header */}
-            <header className="flex items-center justify-between px-6 py-3 border-b border-[var(--border-light)] bg-white">
-                <div className="flex items-center gap-3">
-                    <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 shadow-lg shadow-orange-200">
-                        <Sparkles className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                        <h1 className="text-xl font-bold bg-gradient-to-r from-amber-600 to-orange-600 bg-clip-text text-transparent">
+        <LanguageContext.Provider value={{ lang, setLang }}>
+            <div className="app-container">
+                {/* Header */}
+                <header className="app-header">
+                    <div className="logo-container">
+                        {/* SVG Logo - Three Stacked Layers */}
+                        <div className="w-9 h-9 flex items-center justify-center">
+                            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full text-orange-600">
+                                <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M2 12L12 17L22 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M2 17L12 22L22 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        </div>
+                        <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-orange-700 to-orange-500">
                             NotebookLM Lite
                         </h1>
-                        <p className="text-xs text-[var(--warm-500)]">智能文档助手</p>
                     </div>
-                </div>
 
-                <button
-                    onClick={() => setShowConfig(true)}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[var(--border-light)] hover:bg-[var(--bg-hover)] transition-colors"
-                >
-                    <Settings className="w-4 h-4 text-[var(--warm-500)]" />
-                    <span className="text-sm text-[var(--warm-600)]">设置</span>
-                </button>
-            </header>
+                    <div className="flex items-center gap-3">
+                        {/* Language Switcher */}
+                        <div className="flex items-center bg-white/60 backdrop-blur-sm rounded-full p-1 border border-orange-100 shadow-sm">
+                            <button
+                                onClick={() => setLang('zh')}
+                                className={`px-3 py-1 text-xs font-bold rounded-full transition-all ${lang === 'zh' ? 'bg-orange-500 text-white shadow-md' : 'text-gray-500 hover:bg-orange-50'}`}
+                            >
+                                CN
+                            </button>
+                            <button
+                                onClick={() => setLang('en')}
+                                className={`px-3 py-1 text-xs font-bold rounded-full transition-all ${lang === 'en' ? 'bg-orange-500 text-white shadow-md' : 'text-gray-500 hover:bg-orange-50'}`}
+                            >
+                                EN
+                            </button>
+                        </div>
 
-            {/* Main Content - Three Column Layout */}
-            <div className="flex-1 flex overflow-hidden">
-                {/* Left Panel - Sources */}
-                <div className="w-72 border-r border-[var(--border-light)] bg-white flex flex-col">
-                    <SourcePanel
-                        files={files}
-                        onFilesChange={setFiles}
-                    />
-                </div>
+                        <button
+                            onClick={() => setShowConfig(true)}
+                            className="p-2 hover:bg-orange-100 rounded-full transition-colors text-gray-600"
+                        >
+                            <Settings size={20} />
+                        </button>
+                    </div>
+                </header>
 
-                {/* Center Panel - Chat */}
-                <div className="flex-1 flex flex-col bg-[var(--bg-primary)]">
-                    <ChatPanel
-                        documentIds={documentIds}
+                {/* Main Content */}
+                <main className="app-main">
+                    {/* Left Panel - Sources */}
+                    <div className="panel panel-left">
+                        <SourcePanel
+                            files={files}
+                            onFilesChange={setFiles}
+                        />
+                    </div>
+
+                    {/* Center Panel - Chat */}
+                    <div className="panel panel-center">
+                        <ChatPanel
+                            documentIds={documentIds}
+                            config={config}
+                        />
+                    </div>
+
+                    {/* Right Panel - Studio */}
+                    <div className="panel panel-right">
+                        <StudioPanel
+                            documentIds={documentIds}
+                            config={config}
+                            contents={generatedContents}
+                            onContentGenerated={handlePodcastGenerated}
+                        />
+                    </div>
+                </main>
+
+                {/* Config Modal */}
+                {showConfig && (
+                    <ConfigModal
                         config={config}
+                        onConfigChange={setConfig}
+                        onClose={() => setShowConfig(false)}
                     />
-                </div>
-
-                {/* Right Panel - Studio */}
-                <div className="w-80 border-l border-[var(--border-light)] bg-white flex flex-col">
-                    <StudioPanel
-                        documentIds={documentIds}
-                        config={config}
-                        contents={generatedContents}
-                        onContentGenerated={handlePodcastGenerated}
-                    />
-                </div>
+                )}
             </div>
-
-            {/* Config Modal */}
-            {showConfig && (
-                <ConfigModal
-                    config={config}
-                    onConfigChange={setConfig}
-                    onClose={() => setShowConfig(false)}
-                />
-            )}
-        </div>
+        </LanguageContext.Provider>
     );
 }
 
