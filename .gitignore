@@ -135,6 +135,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+config.yaml
+chonkie/
 
 # Spyder project settings
 .spyderproject
@@ -182,8 +184,14 @@ yarn-error.log*
 # Frontend build
 frontend/dist/
 frontend/.vite/
+frontend/test-results/
+frontend/playwright-report/
 
 # Project specific
 uploads/
 output/
 data/
+.playwright-cli/
+seekdb/
+chonkie/
+.codex/
