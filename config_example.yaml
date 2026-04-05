@@ -1,0 +1,66 @@
+api:
+  models:
+    text_model:
+      # LiteLLM/OpenAI-compatible model string or backend model name.
+      model: "openai/gpt-4o"
+      base_url: "https://api.openai.com/v1"
+      api_key: "sk-your-text-key"
+      adapter: "openai_chat"
+      thinking:
+        # Use "disabled" for lower latency on long podcast/Studio generation
+        # when the selected backend supports this passthrough option.
+        type: "enabled"
+    embedding_model:
+      model: "openai/text-embedding-3-small"
+      base_url: "https://api.openai.com/v1"
+      api_key: "sk-your-embedding-key"
+      adapter: "openai_embedding"
+    rerank_model:
+      # Optional OpenAI-compatible rerank endpoint. Leave empty to use
+      # SeekDB hybrid lexical/vector recall without a cross-encoder reranker.
+      model: ""
+      base_url: "https://api.example.com/v1"
+      api_key: "sk-your-rerank-key"
+      adapter: "openai_rerank"
+    audio_model:
+      # OpenAI-compatible speech endpoint. For SiliconFlow, this resolves to
+      # POST {base_url}/audio/speech with model/input/voice/response_format.
+      model: "fnlp/MOSS-TTSD-v0.5"
+      base_url: "https://api.siliconflow.cn/v1"
+      api_key: "sk-your-audio-key"
+      voice: "fnlp/MOSS-TTSD-v0.5:alex"
+      response_format: "mp3"
+      stream: true
+    image_model:
+      model: "gpt-image-2"
+      base_url: "https://api.example.com/v1"
+      api_key: "sk-your-image-key"
+      adapter: "raw_chat_multimodal"
+    edit_model:
+      model: "gpt-image-2"
+      base_url: "https://api.example.com/v1"
+      api_key: "sk-your-edit-key"
+      adapter: "raw_chat_multimodal"
+
+storage:
+  vector_store_type: "seekdb"
+  seekdb_path: "./data/seekdb.db"
+  chroma_persist_dir: "./data/chroma"
+
+documents:
+  chunk_size: 1000
+  chunk_overlap: 200
+  chunking:
+    # Prefer the released chonkie package for document chunking. The backend
+    # falls back to the simple splitter if chonkie is unavailable.
+    provider: "chonkie"
+    tokenizer: "character"
+  max_upload_size_mb: 50
+
+paths:
+  upload_dir: "./uploads"
+  output_dir: "./output"
+
+podcast:
+  chars_per_minute: 200
+  max_podcast_iterations: 8
