@@ -26,7 +26,7 @@ class PodcastService:
     def __init__(
         self,
         llm_provider: LLMProviderInterface,
-        tts_provider: TTSProviderInterface,
+        tts_provider: Optional[TTSProviderInterface],
         vector_store: Optional[VectorStoreInterface] = None,
         output_dir: str = "./output"
     ):
@@ -75,26 +75,39 @@ class PodcastService:
             prompt_type=prompt_type
         )
         
-        # 2. 合成音频
-        voices = voice_mapping or self.DEFAULT_VOICE_MAPPING
-        dialogues = [{"speaker": d.speaker, "text": d.text} for d in script.dialogues]
-        
-        audio_data = await self.tts.synthesize_dialogue(
-            dialogues=dialogues,
-            voice_mapping=voices
-        )
-        
-        # 3. 保存音频
+        transcript = script.to_transcript()
         filename = f"{uuid.uuid4()}.mp3"
         audio_path = os.path.join(self.output_dir, filename)
-        
-        with open(audio_path, "wb") as f:
-            f.write(audio_data)
+        transcript_filename = f"{uuid.uuid4()}.md"
+        transcript_path = os.path.join(self.output_dir, transcript_filename)
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            f.write(transcript)
+        audio_status = {"status": "skipped", "error": "TTS provider is not configured"}
+
+        if self.tts:
+            try:
+                if hasattr(self.tts, "synthesize"):
+                    audio_status = await self.tts.synthesize(transcript, audio_path)
+                else:
+                    voices = voice_mapping or self.DEFAULT_VOICE_MAPPING
+                    dialogues = [{"speaker": d.speaker, "text": d.text} for d in script.dialogues]
+                    audio_data = await self.tts.synthesize_dialogue(
+                        dialogues=dialogues,
+                        voice_mapping=voices
+                    )
+                    with open(audio_path, "wb") as f:
+                        f.write(audio_data)
+                    audio_status = {"status": "succeeded", "path": audio_path}
+            except Exception as exc:
+                audio_status = {"status": "failed", "error": str(exc)}
         
         return {
-            "audio_path": audio_path,
-            "audio_filename": filename,
-            "transcript": script.to_transcript(),
+            "audio_path": audio_path if audio_status.get("status") == "succeeded" else None,
+            "audio_filename": filename if audio_status.get("status") == "succeeded" else None,
+            "audio_status": audio_status,
+            "transcript": transcript,
+            "transcript_path": transcript_path,
+            "transcript_filename": transcript_filename,
             "script": script,
             "duration_minutes": script.estimated_duration_minutes,
             "dialogue_count": script.dialogue_count

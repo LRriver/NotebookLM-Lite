@@ -1,4 +1,5 @@
-# TTS Provider Implementations
-from .openai_tts import OpenAITTSProvider
+"""TTS provider package.
 
-__all__ = ["OpenAITTSProvider"]
+Import concrete providers from their modules to avoid loading optional audio
+dependencies for tests that only need the OpenAI-compatible speech provider.
+"""

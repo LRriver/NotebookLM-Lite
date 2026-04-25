@@ -53,6 +53,23 @@ EXTENSION_PROMPT_TEMPLATE = """您是一位播客制作人，需要扩展已有�
 
 请生成扩展对话，从紧接着上文的地方继续。"""
 
+CONDENSE_PROMPT_TEMPLATE = """您是一位播客制作人，需要压缩已有播客脚本，使其落在目标时长范围内。
+
+【原始材料摘要】
+{source_summary}
+
+【当前脚本】
+{existing_transcript}
+
+【压缩要求】
+- 目标时长：{min_minutes}-{max_minutes} 分钟
+- 目标对话轮次：约 {target_turns} 轮
+- 保留核心事实、关键数据和结论
+- 删除重复铺垫、过长解释和旁枝内容
+- 保持主持人与嘉宾的自然对话结构
+
+请返回压缩后的完整播客脚本。"""
+
 
 # 风格描述
 STYLE_DESCRIPTIONS = {
@@ -88,6 +105,15 @@ class PodcastWorkflow:
         """
         self.llm = llm_provider
         self.max_iterations = max_iterations
+        self.langgraph_available = self._detect_langgraph()
+
+    @staticmethod
+    def _detect_langgraph() -> bool:
+        try:
+            import langgraph  # noqa: F401
+            return True
+        except Exception:
+            return False
     
     def estimate_duration(self, dialogues: List[DialogueTurn]) -> float:
         """
@@ -161,8 +187,17 @@ class PodcastWorkflow:
             
             iteration += 1
         
+        script, current_duration = await self._condense_if_needed(
+            script=script,
+            source_text=source_text,
+            duration_range=duration_range,
+        )
+
         # 更新估算时长
         script.estimated_duration_minutes = current_duration
+        script.coverage_notes.append(
+            f"Generated with {'LangGraph-ready' if self.langgraph_available else 'linear'} planning/expansion loop; target range {duration_range.value} minutes."
+        )
         
         return script
     
@@ -214,6 +249,83 @@ class PodcastWorkflow:
             return extension
         except Exception:
             return None
+
+    async def _condense_if_needed(
+        self,
+        script: PodcastScript,
+        source_text: str,
+        duration_range: DurationRange,
+    ) -> tuple[PodcastScript, float]:
+        current_duration = self.estimate_duration(script.dialogues)
+        if current_duration <= duration_range.max_minutes:
+            return script, current_duration
+
+        condensed = await self._generate_condensed_script(
+            source_text=source_text,
+            script=script,
+            duration_range=duration_range,
+        )
+        if condensed is not None:
+            original_duration = current_duration
+            script = condensed
+            current_duration = self.estimate_duration(script.dialogues)
+            script.coverage_notes.append(
+                f"condensed oversized script from {original_duration:.1f} minutes toward target range {duration_range.value}."
+            )
+
+        if current_duration > duration_range.max_minutes:
+            script.dialogues = self._trim_dialogues_to_duration(
+                script.dialogues,
+                duration_range.max_minutes,
+            )
+            current_duration = self.estimate_duration(script.dialogues)
+            script.coverage_notes.append(
+                f"Applied deterministic trim guard to stay within {duration_range.max_minutes} minutes."
+            )
+
+        return script, current_duration
+
+    async def _generate_condensed_script(
+        self,
+        source_text: str,
+        script: PodcastScript,
+        duration_range: DurationRange,
+    ) -> Optional[PodcastScript]:
+        source_summary = source_text[:2000] + "..." if len(source_text) > 2000 else source_text
+        existing_transcript = script.to_transcript()
+        prompt = CONDENSE_PROMPT_TEMPLATE.format(
+            source_summary=source_summary,
+            existing_transcript=existing_transcript[:8000],
+            min_minutes=duration_range.min_minutes,
+            max_minutes=duration_range.max_minutes,
+            target_turns=self._calculate_target_turns(duration_range.target_minutes),
+        )
+        try:
+            return await self.llm.generate_structured(
+                prompt=prompt,
+                response_model=PodcastScript,
+                temperature=0.6,
+            )
+        except Exception:
+            return None
+
+    def _trim_dialogues_to_duration(
+        self,
+        dialogues: List[DialogueTurn],
+        max_minutes: int,
+    ) -> List[DialogueTurn]:
+        max_chars = max_minutes * self.CHARS_PER_MINUTE
+        if sum(len(d.text) for d in dialogues) <= max_chars:
+            return dialogues
+
+        budget_per_turn = max(20, max_chars // max(1, len(dialogues)) - 3)
+        trimmed: List[DialogueTurn] = []
+        for dialogue in dialogues:
+            text = dialogue.text
+            if len(text) > budget_per_turn:
+                text = text[:budget_per_turn].rstrip() + "..."
+            trimmed.append(DialogueTurn(speaker=dialogue.speaker, text=text))
+        return trimmed
     
     async def generate_with_callback(
         self,
@@ -278,5 +390,11 @@ class PodcastWorkflow:
             if on_progress:
                 on_progress(current_duration, duration_range.min_minutes, iteration)
         
+        script, current_duration = await self._condense_if_needed(
+            script=script,
+            source_text=source_text,
+            duration_range=duration_range,
+        )
+
         script.estimated_duration_minutes = current_duration
         return script

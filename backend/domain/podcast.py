@@ -14,6 +14,7 @@ class DurationRange(str, Enum):
     MEDIUM = "5-10"     # 5-10分钟
     LONG = "10-15"      # 10-15分钟
     EXTENDED = "15-20"  # 15-20分钟
+    DEEP = "20-30"      # 20-30分钟
     
     @property
     def min_minutes(self) -> int:
@@ -39,8 +40,10 @@ class DurationRange(str, Enum):
             return cls.MEDIUM
         elif minutes <= 15:
             return cls.LONG
-        else:
+        elif minutes <= 20:
             return cls.EXTENDED
+        else:
+            return cls.DEEP
 
 
 class DialogueTurn(BaseModel):
@@ -87,6 +90,7 @@ class PodcastScript(BaseModel):
         default=0.0, 
         description="预估时长（分钟）"
     )
+    coverage_notes: List[str] = Field(default_factory=list, description="覆盖与扩写说明")
     
     @property
     def dialogue_count(self) -> int:

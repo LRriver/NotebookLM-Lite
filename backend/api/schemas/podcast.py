@@ -10,6 +10,7 @@ class PodcastGenerateRequest(BaseModel):
     """播客生成请求"""
     # 来源
     document_ids: List[str] = Field(default_factory=list, description="文档ID列表")
+    source_ids: List[str] = Field(default_factory=list, description="知识库 source ID 列表")
     source_text: Optional[str] = Field(None, description="直接提供的源文本")
     
     # 生成选项
@@ -24,8 +25,8 @@ class PodcastGenerateRequest(BaseModel):
     guest_voice: str = Field(default="nova", description="嘉宾音色")
     
     # LLM 配置
-    llm_provider: str = Field(default="openai")
-    llm_api_key: str = Field(...)
+    llm_provider: str = Field(default="litellm")
+    llm_api_key: str = Field(default="")
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
     
@@ -38,7 +39,11 @@ class PodcastGenerateRequest(BaseModel):
 
 class PodcastGenerateResponse(BaseModel):
     """播客生成响应"""
-    audio_url: str = Field(..., description="音频下载URL")
+    audio_url: Optional[str] = Field(None, description="音频下载URL")
+    audio_status: Dict = Field(default_factory=dict, description="音频生成状态")
+    audio_filename: Optional[str] = None
+    transcript_url: Optional[str] = None
+    transcript_filename: Optional[str] = None
     transcript: str = Field(..., description="对话文本")
     duration_minutes: float = Field(..., description="估算时长（分钟）")
     dialogue_count: int = Field(..., description="对话轮数")
@@ -47,12 +52,13 @@ class PodcastGenerateResponse(BaseModel):
 class PodcastScriptRequest(BaseModel):
     """仅生成脚本请求"""
     document_ids: List[str] = Field(default_factory=list)
+    source_ids: List[str] = Field(default_factory=list)
     source_text: Optional[str] = None
     duration_range: DurationRange = DurationRange.SHORT
     prompt_type: str = "default"
     
-    llm_provider: str = "openai"
-    llm_api_key: str
+    llm_provider: str = "litellm"
+    llm_api_key: str = ""
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
 
@@ -65,3 +71,4 @@ class PodcastScriptResponse(BaseModel):
     dialogues: List[Dict[str, str]]
     duration_minutes: float
     transcript: str
+    coverage_notes: List[str] = Field(default_factory=list)
