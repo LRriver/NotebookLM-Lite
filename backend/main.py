@@ -13,7 +13,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
-from .api.routes import documents_router, chat_router, podcast_router
+from .api.routes.chat import router as chat_router
+from .api.routes.config import router as config_router
+from .api.routes.documents import router as documents_router
+from .api.routes.artifacts import router as artifacts_router
+from .api.routes.podcast import router as podcast_router
+from .api.routes.sources import router as sources_router
+from .api.routes.notes import router as notes_router
 
 
 @asynccontextmanager
@@ -49,8 +55,12 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(documents_router, prefix="/api")
+app.include_router(config_router, prefix="/api")
+app.include_router(sources_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
+app.include_router(artifacts_router, prefix="/api")
 app.include_router(podcast_router, prefix="/api")
+app.include_router(notes_router, prefix="/api")
 
 
 # 健康检查

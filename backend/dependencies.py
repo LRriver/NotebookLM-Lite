@@ -7,8 +7,9 @@ Enables easy testing and swapping of implementations.
 from typing import Optional
 from functools import lru_cache
 
-from .config import Settings, get_settings
+from .config import ModelProfile, Settings, get_settings
 from .core.interfaces.vector_store import VectorStoreInterface
+from .core.interfaces.knowledge_repository import KnowledgeRepositoryInterface
 from .core.interfaces.llm_provider import LLMProviderInterface
 from .core.interfaces.tts_provider import TTSProviderInterface
 from .core.interfaces.document_parser import DocumentParserInterface
@@ -18,6 +19,13 @@ class DependencyContainer:
     """依赖注入容器"""
     
     _vector_store: Optional[VectorStoreInterface] = None
+    _knowledge_repository: Optional[KnowledgeRepositoryInterface] = None
+
+    @classmethod
+    def reset_runtime_caches(cls) -> None:
+        """Drop cached services that depend on model settings."""
+
+        cls._vector_store = None
     
     @classmethod
     def get_vector_store(
@@ -44,6 +52,23 @@ class DependencyContainer:
                     persist_dir=settings.chroma_persist_dir,
                     embedding_model=settings.embedding_model
                 )
+            elif settings.vector_store_type == "seekdb":
+                from .infrastructure.vector_stores.seekdb_vector_store import SeekDBVectorStore
+                embedding_provider = (
+                    cls.get_embedding_provider(settings=settings)
+                    if settings.api.models.embedding_model.model and settings.api.models.embedding_model.api_key
+                    else None
+                )
+                rerank_provider = (
+                    cls.get_rerank_provider(settings=settings)
+                    if settings.api.models.rerank_model.model and settings.api.models.rerank_model.api_key
+                    else None
+                )
+                cls._vector_store = SeekDBVectorStore(
+                    repository=cls.get_knowledge_repository(settings=settings),
+                    embedding_provider=embedding_provider,
+                    rerank_provider=rerank_provider,
+                )
             # 预留 FAISS 扩展
             # elif settings.vector_store_type == "faiss":
             #     from .infrastructure.vector_stores.faiss_store import FAISSVectorStore
@@ -52,6 +77,75 @@ class DependencyContainer:
                 raise ValueError(f"Unknown vector store type: {settings.vector_store_type}")
         
         return cls._vector_store
+
+    @classmethod
+    def get_knowledge_repository(
+        cls,
+        settings: Optional[Settings] = None,
+        force_new: bool = False,
+    ) -> KnowledgeRepositoryInterface:
+        if cls._knowledge_repository is None or force_new:
+            settings = settings or get_settings()
+            from .infrastructure.repositories.seekdb_repository import SeekDBRepository
+            cls._knowledge_repository = SeekDBRepository(settings.seekdb_path)
+        return cls._knowledge_repository
+
+    @classmethod
+    def get_source_service(cls, settings: Optional[Settings] = None):
+        from .core.services.chunking_service import ChunkingService
+        from .core.services.source_service import SourceService
+        from .infrastructure.parsers.docling_parser import DoclingParser
+
+        settings = settings or get_settings()
+        return SourceService(
+            repository=cls.get_knowledge_repository(settings=settings),
+            parser=DoclingParser(),
+            embedding_provider=(
+                cls.get_embedding_provider(settings=settings)
+                if settings.api.models.embedding_model.model and settings.api.models.embedding_model.api_key
+                else None
+            ),
+            chunking_service=ChunkingService(
+                chunk_size=settings.chunk_size,
+                chunk_overlap=settings.chunk_overlap,
+                provider=settings.chunking.provider,
+                tokenizer=settings.chunking.tokenizer,
+            ),
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+        )
+
+    @staticmethod
+    def _map_litellm_profile(
+        provider: str,
+        api_key: str,
+        base_url: Optional[str],
+        model: Optional[str],
+        settings: Optional[Settings] = None,
+    ) -> ModelProfile:
+        if settings and provider in {"litellm", "default"} and not api_key:
+            profile = settings.api.models.text_model.model_copy(deep=True)
+            if model:
+                profile.model = model
+            if base_url:
+                profile.base_url = base_url
+            return profile
+
+        model_name = model or (settings.default_llm_model if settings else "gpt-4o")
+        if provider in {"anthropic", "claude"} and not model_name.startswith("anthropic/"):
+            model_name = f"anthropic/{model_name}"
+        elif provider in {"google", "gemini", "genai"} and not model_name.startswith("gemini/"):
+            model_name = f"gemini/{model_name}"
+        elif provider in {"openai", "openai-compatible"} and "/" not in model_name:
+            model_name = f"openai/{model_name}"
+
+        return ModelProfile(
+            model=model_name,
+            api_key=api_key,
+            base_url=base_url or "",
+            adapter=f"{provider}_chat",
+            thinking=settings.api.models.text_model.thinking if settings else None,
+        )
     
     @staticmethod
     def get_llm_provider(
@@ -72,22 +166,35 @@ class DependencyContainer:
         Returns:
             LLM 提供商实例
         """
-        if provider == "openai":
-            from .infrastructure.llm_providers.openai_provider import OpenAILLMProvider
-            return OpenAILLMProvider(
+        settings = get_settings()
+        from .infrastructure.llm_providers.litellm_provider import LiteLLMProvider
+
+        return LiteLLMProvider(
+            profile=DependencyContainer._map_litellm_profile(
+                provider=provider,
                 api_key=api_key,
                 base_url=base_url,
-                model=model or "gpt-4o"
+                model=model,
+                settings=settings,
             )
-        elif provider == "google":
-            from .infrastructure.llm_providers.google_provider import GoogleLLMProvider
-            return GoogleLLMProvider(
-                api_key=api_key,
-                base_url=base_url,  # Now supports custom base URL
-                model=model or "gemini-pro"
-            )
-        else:
-            raise ValueError(f"Unknown LLM provider: {provider}")
+        )
+
+    @staticmethod
+    def get_embedding_provider(settings: Optional[Settings] = None):
+        from .infrastructure.llm_providers.litellm_provider import LiteLLMProvider
+
+        settings = settings or get_settings()
+        profile = settings.api.models.embedding_model
+        if not profile.model:
+            profile.model = settings.embedding_model
+        return LiteLLMProvider(profile=profile)
+
+    @staticmethod
+    def get_rerank_provider(settings: Optional[Settings] = None):
+        from .infrastructure.llm_providers.rerank_provider import RerankProvider
+
+        settings = settings or get_settings()
+        return RerankProvider(settings.api.models.rerank_model)
     
     @staticmethod
     def get_tts_provider(
@@ -113,6 +220,13 @@ class DependencyContainer:
             return DashscopeTTSProvider(api_key=api_key, **kwargs)
         else:
             raise ValueError(f"Unknown TTS provider: {provider}")
+
+    @staticmethod
+    def get_audio_speech_provider(settings: Optional[Settings] = None):
+        from .infrastructure.tts_providers.audio_speech_provider import AudioSpeechProvider
+
+        settings = settings or get_settings()
+        return AudioSpeechProvider(settings.api.models.audio_model)
     
     @staticmethod
     def get_document_parser(file_extension: str) -> DocumentParserInterface:
@@ -133,6 +247,31 @@ class DependencyContainer:
 def get_vector_store() -> VectorStoreInterface:
     """获取向量存储（FastAPI 依赖注入用）"""
     return DependencyContainer.get_vector_store()
+
+
+def get_knowledge_repository() -> KnowledgeRepositoryInterface:
+    """获取知识库 repository（FastAPI 依赖注入用）"""
+    return DependencyContainer.get_knowledge_repository()
+
+
+def get_source_service():
+    """获取 source service（FastAPI 依赖注入用）"""
+    return DependencyContainer.get_source_service()
+
+
+def get_embedding_provider():
+    """获取 embedding provider（FastAPI 依赖注入用）"""
+    return DependencyContainer.get_embedding_provider()
+
+
+def get_rerank_provider():
+    """获取 rerank provider（FastAPI 依赖注入用）"""
+    return DependencyContainer.get_rerank_provider()
+
+
+def get_audio_speech_provider():
+    """获取 OpenAI-compatible speech provider（FastAPI 依赖注入用）"""
+    return DependencyContainer.get_audio_speech_provider()
 
 
 def get_llm_provider(
