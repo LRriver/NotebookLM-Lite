@@ -1,91 +1,182 @@
-# NotebookLM-Lite (Sci-Fi Edition)
+# NotebookLM-Lite
 
-NotebookLM-Lite is a note-taking application inspired by Google's NotebookLM, aiming to fully replicate features such as document Q&A, podcast generation, and presentation creation. It is currently under development. For a simple Chinese podcast generation feature, please refer to the v0.1 branch.
+[中文说明](./README_zn.md)
+
+NotebookLM-Lite is an open-source NotebookLM-style AI knowledge workspace for local files, grounded RAG chat, notes, interactive Studio artifacts, and long-form podcast generation. It is built for people who like the Google NotebookLM workflow but want a hackable, self-hosted project with their own model endpoints, their own document pipeline, and a clear backend architecture.
+
+NotebookLM-Lite is not affiliated with Google NotebookLM. The goal is to bring most of the NotebookLM learning and research experience into an open project: source-grounded answers, citations, mind maps, flashcards, quizzes, reports, data tables, infographics, podcast/audio overviews, notes, and future slide/video workflows.
 
 ![NotebookLM-Lite workbench demo](docs/assets/notebooklm-lite-demo.gif)
 
 [Watch the HD demo video](docs/assets/notebooklm-lite-demo.webm)
 
-The demo covers configuring model profiles, adding a source, asking grounded RAG questions with citations, generating interactive Mind Map, Flashcards/Quiz, Data Table, Podcast, and Video Overview placeholder artifacts. Model waiting time is shortened for README pacing.
+The demo uses [doc/L9.md](doc/L9.md) as the sample source and shows model configuration, source upload, cited RAG chat, interactive Mind Map, Flashcards/Quiz, Data Table, Podcast, and the Video Overview placeholder. Model waiting time is shortened for README pacing.
 
-## ✨ Features
+## Why NotebookLM-Lite
 
-- **Unified LLM Interface**: Text generation, embeddings, rerank, and speech
-  profiles are managed through LiteLLM/OpenAI-compatible settings.
-- **Neural Audio Synthesis**: High-quality, multi-speaker podcast generation using CosyVoice (via Dashscope).
-- **Document Intelligence**: Docling parses source files, Chonkie chunks text,
-  and SeekDB stores sources/chunks for hybrid RAG retrieval with citations.
-- **Interactive Player**: Integrated audio player with playback controls and download capability.
+NotebookLM-style tools are becoming the default interface for working with long documents, research notes, study material, product manuals, papers, and course content. NotebookLM-Lite focuses on the same core loop:
 
-## 🛠️ Tech Stack
+1. Add sources to a notebook-like knowledge base.
+2. Ask questions grounded in selected sources.
+3. Save useful answers and notes back into the knowledge base.
+4. Generate structured outputs such as maps, quizzes, reports, tables, infographics, and podcasts.
+5. Keep every generated artifact downloadable and inspectable.
 
-- **Frontend**: React, Vite, TailwindCSS, Framer Motion (animations)
-- **Backend**: Python, FastAPI, Uvicorn
-- **AI/ML**: OpenAI API, Anthropic API, Dashscope (TTS)
+That makes the project useful as a NotebookLM alternative, a RAG notebook starter, an AI study assistant, a document Q&A system, and a backend reference for multi-step AI workflows.
 
-## 🚀 Getting Started
+## Highlights
 
-### Prerequisites
+- **NotebookLM-like three-panel workspace**: sources on the left, grounded chat in the center, Studio artifacts and generated files on the right.
+- **Multi-format source ingestion**: upload or paste sources such as PDF, DOCX, TXT, Markdown, HTML, CSV, JSON, and YAML.
+- **Document intelligence pipeline**: Docling extracts document text, Chonkie chunks it, and SeekDB persists sources, chunks, notes, jobs, and artifacts.
+- **Hybrid RAG retrieval**: SeekDB combines lexical BM25-style recall, optional embeddings, optional rerank, selected-source filtering, and citations.
+- **Streaming grounded chat**: ask questions over selected sources, render Markdown answers, and keep citations attached to retrieved chunks.
+- **Notes as first-class knowledge**: create notes, save chat answers as notes, and convert notes back into sources for later RAG.
+- **Interactive Studio artifacts**: generate Mind Maps, FAQ, Flashcards/Quiz, Reports/Study Guides, Data Tables, SVG Infographics, and Podcast scripts from selected sources.
+- **NotebookLM-like study UX**: flashcards flip, quizzes show feedback and scores, mind maps expand, tables render as tables, and artifacts can be downloaded as Markdown/JSON/SVG where applicable.
+- **Podcast and Audio Overview workflow**: structured podcast scripts are generated with Pydantic validation and can be expanded toward controllable durations up to 30 minutes; speech generation is optional when a compatible audio model is configured.
+- **Unified model runtime**: LiteLLM manages text generation, embeddings, rerank, and OpenAI-compatible speech profiles. OpenAI-compatible, Anthropic, Gemini/GenAI-style, and custom gateway deployments can be configured from `config.yaml`.
+- **Extensible backend boundaries**: FastAPI owns resource APIs, while longer workflows are isolated for future LangGraph orchestration, Deep Research, Slide Deck, and Video Overview support.
+
+## Capability Map
+
+| Capability | Status | Notes |
+| --- | --- | --- |
+| Source upload and pasted text | Available | File sources and text sources are stored in SeekDB. |
+| RAG chat with citations | Available | Supports selected sources, Markdown answers, and streaming response UI. |
+| Notes | Available | Create notes, save answers as notes, and convert notes into sources. |
+| Mind Maps | Available | Structured tree output with expandable frontend viewer. |
+| FAQ | Available | Structured FAQ generated from selected sources. |
+| Flashcards and Quizzes | Available | Flip-card viewer plus quiz feedback, score, and retake. |
+| Reports and Study Guides | Available | Structured summaries, sections, and takeaways. |
+| Data Tables | Available | Rendered as real tables and downloadable as artifact data. |
+| Infographics | Available | Structured SVG infographic generation and safe image rendering. |
+| Podcast / Audio Overview | Available | Script generation is core; audio download is available when speech config is valid. |
+| Runtime model configuration | Available | Separate text, embedding, rerank, speech, image, and edit profiles. |
+| Deep Research | Placeholder | API/job boundary exists so future research output can be saved as a source. |
+| Slide Deck / PPT | Adapter boundary | AIPPT integration boundary exists; full viewer/download flow is not enabled yet. |
+| Video Overview | Placeholder | Studio card is present and shows an in-development notice. |
+
+## Architecture
+
+```text
+frontend/
+  React + Vite workbench
+  SourcePanel, ChatPanel, NotesPanel, StudioPanel, ArtifactViewer
+
+backend/
+  FastAPI routes for sources, chat, notes, artifacts, podcast, config
+  Docling parser + Chonkie chunking
+  SeekDB repository and vector-store adapter
+  LiteLLM provider for text, structured output, embeddings, and rerank
+  Podcast workflow with Pydantic structured output
+```
+
+Key backend choices:
+
+- **FastAPI** for CRUD, list, download, runtime config, and status APIs.
+- **Docling** for document parsing.
+- **Chonkie** for chunking, with a simple fallback.
+- **SeekDB** as the project knowledge repository.
+- **LiteLLM** as the unified model access layer.
+- **Pydantic structured output** for Studio artifacts and podcast scripts.
+
+## Getting Started
+
+### Requirements
 
 - Python 3.10+
 - Node.js 18+
-- FFmpeg (Must be installed and added to system PATH)
+- A text model endpoint configured in `config.yaml`
+- Optional: embedding, rerank, and speech model endpoints
 
-### Installation
-
-#### 1. Backend Setup
-
-Navigate to the project root:
+### Backend
 
 ```bash
-# Install Python dependencies
 pip install -r requirements.txt
-
-# Create your local configuration file
 cp config_example.yaml config.yaml
 ```
 
-Edit `config.yaml` and set the model credentials you want to use. Text,
-embedding, optional rerank, and speech models are configured separately under
-`api.models`. The default text path is LiteLLM/OpenAI-compatible, and
-Anthropic or Gemini/GenAI-style model strings can be used through
-LiteLLM-compatible configuration. Keep `config.yaml` local; it is ignored by
-git and must not be committed with real keys.
+Edit `config.yaml` and fill in the profiles you want to use:
+
+- `api.models.text_model`: chat, RAG answers, Studio artifacts, podcast scripts
+- `api.models.embedding_model`: optional vector retrieval
+- `api.models.rerank_model`: optional rerank
+- `api.models.audio_model`: optional speech/audio generation
+- `storage.seekdb_path`: local knowledge database
+- `documents.chunking`: Chonkie/simple chunking settings
+
+Keep `config.yaml` local. It is ignored by git and should not contain committed keys.
+
+Start the backend:
 
 ```bash
-
-# Start the API server
-python backend/main.py
+python -m backend.main
 ```
-The backend will run at `http://localhost:8000`.
 
-#### 2. Frontend Setup
+The API runs at `http://localhost:8000`.
 
-Open a new terminal and navigate to the `frontend` directory:
+### Frontend
 
 ```bash
 cd frontend
-
-# Install Node dependencies
 npm install
-
-# Start the development server
 npm run dev
 ```
-The UI will be available at `http://localhost:5173`.
 
-## 📖 Usage Guide
+Open `http://localhost:5173`.
 
-1.  **Launch**: Open `http://localhost:5173` in your browser.
-2.  **Configure**:
-    *   Configure the text model, embedding model, optional rerank model, and optional speech model in `config.yaml`.
-    *   The Settings button also loads local defaults and can refresh runtime model profiles without exposing configured keys back to the browser.
-    *   Use the text model thinking toggle when the selected backend supports it.
-    *   Speech/TTS is optional for text artifact generation; podcast scripts can still be generated without audio credentials.
-3.  **Upload**: Drag & drop a file or paste text into Sources. New uploads use Chonkie chunking and configured embeddings when available.
-4.  **Ask and Generate**: Select sources, ask RAG questions with citations, or generate Studio text artifacts and podcast scripts.
-5.  **Listen**: Use the built-in player to listen to your podcast or download it.
+## Usage
 
-## 📄 License
+1. Open the workbench and check the settings panel.
+2. Upload a source file or paste text in the Sources panel.
+3. Select one or more sources.
+4. Ask source-grounded questions in Chat.
+5. Save useful answers as notes or sources.
+6. Generate Studio artifacts:
+   - Podcast
+   - Mind Map
+   - FAQ
+   - Flashcards / Quiz
+   - Report / Study Guide
+   - Data Table
+   - Infographic
+7. Download generated artifacts as Markdown, JSON, SVG, transcript, or audio where supported.
+
+## Testing
+
+Backend:
+
+```bash
+PYTHONPATH=. pytest -q
+PYTHONPATH=. python -m compileall -q backend
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm run build
+npm run test
+npm run test:e2e -- --project=chromium
+```
+
+OpenSpec:
+
+```bash
+openspec validate notebooklm-text-closure --strict
+```
+
+## Current Scope and Roadmap
+
+NotebookLM-Lite already covers the core text-based NotebookLM loop: sources, cited chat, notes, Studio study artifacts, data tables, infographics, and podcast scripts/audio. The next major areas are:
+
+- Full Slide Deck/PPT integration using the AIPPT adapter boundary.
+- Real Video Overview generation instead of the current placeholder card.
+- Stronger Deep Research workflows that can search, synthesize, and save research reports as sources.
+- More export targets, including CSV/Sheets-style table export and richer artifact sharing.
+- More source types, such as URLs, audio, images, YouTube, and Google Drive-style integrations.
+
+## License
 
 Apache 2.0
