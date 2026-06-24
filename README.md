@@ -1,4 +1,4 @@
-# NotebookLM-Lite (Sci-Fi Edition)
+# NotebookLM-Lite
 
 NotebookLM-Lite is a note-taking application inspired by Google's NotebookLM, aiming to fully replicate features such as document Q&A, podcast generation, and presentation creation. It is currently under development. For a simple Chinese podcast generation feature, please refer to the v0.1 branch.
 
