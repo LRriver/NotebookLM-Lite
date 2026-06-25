@@ -1,6 +1,6 @@
 # NotebookLM-Lite
 
-中文 | [English](./README.md)
+[中文](./README_zh.md) | [English](./README.md)
 
 NotebookLM-Lite 是一个开源的 NotebookLM 风格 AI 知识工作台，用于把本地资料变成可问答、可整理、可生成内容的知识库。它面向长文档阅读、课程学习、论文/手册分析、产品资料整理、播客脚本生成、RAG 应用原型等场景，目标是在一个可自托管、可改造、可接入自定义模型的项目里，复刻大部分 NotebookLM 的核心体验。
 
