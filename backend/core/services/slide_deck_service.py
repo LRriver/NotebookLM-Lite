@@ -8,6 +8,7 @@ from typing import Any
 from ...domain.slide_deck import (
     SlideAsset,
     SlideAssetStage,
+    SlideDeckExport,
     SlideDeckFileKind,
     SlideDeckJob,
     SlideDeckJobStage,
@@ -16,6 +17,8 @@ from ...domain.slide_deck import (
     SlideDeckStage,
     SlideDeckStatus,
     SlideEditHistory,
+    SlideExportFormat,
+    SlideExportStatus,
     SlidePromptPlanSet,
     SlideRecord,
     SlideStatus,
@@ -23,6 +26,7 @@ from ...domain.slide_deck import (
 from ...domain.source import Artifact, ArtifactType, JobStatus, new_id, utc_now
 from ...infrastructure.slide_deck_files import SlideDeckFileStore
 from ..interfaces.knowledge_repository import KnowledgeRepositoryInterface
+from .slide_deck_export_service import SlideDeckPPTXExporter
 
 
 class SlideDeckService:
@@ -39,6 +43,7 @@ class SlideDeckService:
         self.image_provider = image_provider
         self.edit_provider = edit_provider
         self.file_store = file_store
+        self.pptx_exporter = SlideDeckPPTXExporter()
 
     async def create_deck(
         self,
@@ -293,6 +298,76 @@ class SlideDeckService:
         await self._upsert_deck_artifact(deck)
         return deck
 
+    async def export_pptx(self, deck_id: str) -> SlideDeckJob:
+        deck = await self._require_deck(deck_id)
+        job = SlideDeckJob(
+            deck_id=deck.id,
+            stage=SlideDeckJobStage.EXPORT,
+            status=JobStatus.RUNNING,
+            started_at=utc_now(),
+        )
+        await self.repository.save_slide_deck_job(job)
+        export = SlideDeckExport(
+            deck_id=deck.id,
+            format=SlideExportFormat.PPTX,
+            file_path="",
+            filename=f"{deck.id}.pptx",
+            status=SlideExportStatus.RUNNING,
+        )
+        await self.repository.save_slide_export(export)
+        try:
+            image_paths = await self._exportable_slide_image_paths(deck)
+            pptx_content = self.pptx_exporter.export(
+                image_paths,
+                aspect_ratio=str(deck.config_snapshot.get("aspect_ratio", "16:9")),
+            )
+            filename = f"{deck.id}-{new_id('export')}.pptx"
+            stored = self.file_store.save_file(
+                deck_id=deck.id,
+                kind=SlideDeckFileKind.EXPORT,
+                filename=filename,
+                content=pptx_content,
+            )
+            export.file_path = str(stored.path)
+            export.filename = filename
+            export.byte_size = stored.byte_size
+            export.checksum = stored.checksum
+            export.download_ref = stored.download_ref
+            export.slide_count = len(image_paths)
+            export.status = SlideExportStatus.SUCCEEDED
+            export.error = None
+            export.updated_at = utc_now()
+            await self.repository.save_slide_export(export)
+            deck.stage = SlideDeckStage.EXPORTED
+            deck.updated_at = utc_now()
+            await self.repository.save_slide_deck(deck)
+            await self._upsert_deck_artifact(deck)
+            job.status = JobStatus.SUCCEEDED
+            job.progress = 1.0
+            job.result_ref = export.id
+        except Exception as exc:
+            export.status = SlideExportStatus.FAILED
+            export.error = str(exc)
+            export.updated_at = utc_now()
+            await self.repository.save_slide_export(export)
+            job.status = JobStatus.FAILED
+            job.error = str(exc)
+        job.finished_at = utc_now()
+        await self.repository.save_slide_deck_job(job)
+        return job
+
+    async def get_latest_export(self, deck_id: str, format: SlideExportFormat = SlideExportFormat.PPTX) -> SlideDeckExport | None:
+        await self._require_deck(deck_id)
+        exports = await self.repository.list_slide_exports(deck_id)
+        matching = [
+            export
+            for export in exports
+            if export.format == format and export.status == SlideExportStatus.SUCCEEDED
+        ]
+        if not matching:
+            return None
+        return sorted(matching, key=lambda export: export.created_at, reverse=True)[0]
+
     async def _store_image_asset(
         self,
         deck_id: str,
@@ -318,6 +393,21 @@ class SlideDeckService:
             stage=stage,
         )
         return await self.repository.save_slide_asset(asset)
+
+    async def _exportable_slide_image_paths(self, deck: SlideDeckProject) -> list[str]:
+        if deck.status != SlideDeckStatus.READY and deck.stage != SlideDeckStage.EXPORTED:
+            raise ValueError("generated slide images are required before PPTX export")
+        if not deck.slides:
+            raise ValueError("generated slide images are required before PPTX export")
+        image_paths: list[str] = []
+        for slide in sorted(deck.slides, key=lambda item: item.page_number):
+            if slide.status != SlideStatus.SUCCEEDED or not slide.asset_id:
+                raise ValueError("generated slide images are required before PPTX export")
+            asset = await self.repository.get_slide_asset(slide.asset_id)
+            if not asset or not asset.file_path:
+                raise ValueError("generated slide images are required before PPTX export")
+            image_paths.append(asset.file_path)
+        return image_paths
 
     async def _upsert_deck_artifact(self, deck: SlideDeckProject) -> None:
         artifact = Artifact(

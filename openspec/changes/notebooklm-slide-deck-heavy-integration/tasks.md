@@ -36,11 +36,11 @@
 
 ## 5. PPTX Export
 
-- [ ] 5.1 Port the image-based PPTX export helper from `/Users/lzj/proj/notebook/new_pro/AIPPT/api/routes/export.py` into a NotebookLM-Lite export service.
-- [ ] 5.2 Implement `POST /api/slide-decks/{deck_id}/export/jobs` and `GET /api/slide-decks/{deck_id}/download?format=pptx`.
-- [ ] 5.3 Persist export records with status, filename, format, file path, generated timestamp, slide count, and error state.
-- [ ] 5.4 Add tests that export a PPTX from generated slide images and validate the file exists and has the expected slide count.
-- [ ] 5.5 Update user-facing wording to say "PPTX export" without claiming native editable PowerPoint shapes.
+- [x] 5.1 Port the image-based PPTX export helper from `/Users/lzj/proj/notebook/new_pro/AIPPT/api/routes/export.py` into a NotebookLM-Lite export service.
+- [x] 5.2 Implement `POST /api/slide-decks/{deck_id}/export/jobs` and `GET /api/slide-decks/{deck_id}/download?format=pptx`.
+- [x] 5.3 Persist export records with status, filename, format, file path, generated timestamp, slide count, and error state.
+- [x] 5.4 Add tests that export a PPTX from generated slide images and validate the file exists and has the expected slide count.
+- [x] 5.5 Update user-facing wording to say "PPTX export" without claiming native editable PowerPoint shapes.
 
 ## 6. Frontend Slide Deck Workspace
 

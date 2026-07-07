@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from ...config import get_settings
 from ...core.services.slide_deck_planning_service import SlideDeckPlanningService
 from ...core.services.slide_deck_service import SlideDeckService
 from ...dependencies import get_knowledge_repository, get_llm_provider
-from ...domain.slide_deck import SlideDeckJob, SlideDeckProject
+from ...domain.slide_deck import SlideDeckJob, SlideDeckProject, SlideExportFormat
 from ...infrastructure.image_providers.raw_multimodal_provider import RawMultimodalImageProvider
 from ...infrastructure.slide_deck_files import SlideDeckFileStore
 from ..schemas.slide_deck import (
@@ -182,3 +185,35 @@ async def edit_slide(
         return _deck_response(await service.edit_slide(deck_id, slide_id, request.instruction))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/slide-decks/{deck_id}/export/jobs", response_model=SlideDeckJobResponse)
+async def export_slide_deck(deck_id: str, service: SlideDeckService = Depends(get_slide_deck_service)):
+    try:
+        return _job_response(await service.export_pptx(deck_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/slide-decks/{deck_id}/download")
+async def download_slide_deck(
+    deck_id: str,
+    format: SlideExportFormat = SlideExportFormat.PPTX,
+    service: SlideDeckService = Depends(get_slide_deck_service),
+):
+    if format != SlideExportFormat.PPTX:
+        raise HTTPException(status_code=400, detail=f"Unsupported export format: {format.value}")
+    try:
+        export = await service.get_latest_export(deck_id, format)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not export:
+        raise HTTPException(status_code=404, detail=f"No successful {format.value} export found")
+    path = Path(export.file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Export file not found")
+    return FileResponse(
+        path=str(path),
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        filename=export.filename,
+    )

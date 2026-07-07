@@ -54,7 +54,7 @@ That makes the project useful as a NotebookLM alternative, a RAG notebook starte
 | Podcast / Audio Overview | Available | Script generation is core; audio download is available when speech config is valid. |
 | Runtime model configuration | Available | Separate text, embedding, rerank, speech, image, and edit profiles. |
 | Deep Research | Placeholder | API/job boundary exists so future research output can be saved as a source. |
-| Slide Deck / PPT | Adapter boundary | AIPPT integration boundary exists; full viewer/download flow is not enabled yet. |
+| Slide Deck / PPT | In progress | Native workflow API and image-based PPTX export are available; full editor workspace is being integrated. |
 | Video Overview | Placeholder | Studio card is present and shows an in-development notice. |
 
 ## Architecture

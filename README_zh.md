@@ -54,7 +54,7 @@ NotebookLM 这类产品正在成为处理长资料、学习材料、研究笔记
 | Podcast / Audio Overview | 已支持 | 脚本生成是核心；配置语音模型后可下载音频。 |
 | 运行时模型配置 | 已支持 | 文本、embedding、rerank、语音、图像、编辑模型分开配置。 |
 | Deep Research | 占位边界 | 已有 API/job placeholder，后续可把研究报告保存为 source。 |
-| Slide Deck / PPT | Adapter 边界 | 已有 AIPPT 集成边界，完整浏览/下载流程暂未开放。 |
+| Slide Deck / PPT | 集成中 | 已支持原生工作流 API 和基于生成图片的 PPTX export，完整编辑工作区正在集成。 |
 | Video Overview | 占位入口 | Studio 卡片已存在，点击提示功能开发中。 |
 
 ## 架构
