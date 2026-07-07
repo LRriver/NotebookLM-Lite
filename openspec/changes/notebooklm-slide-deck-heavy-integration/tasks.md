@@ -25,14 +25,14 @@
 
 ## 4. Slide Deck Workflow And API
 
-- [ ] 4.1 Implement `SlideDeckService` for deck creation from selected NotebookLM-Lite source IDs and frozen source-context snapshots.
-- [ ] 4.2 Implement outline generation job and PATCH confirmation/edit endpoint.
-- [ ] 4.3 Implement prompt-plan generation job and PATCH confirmation/edit endpoint.
-- [ ] 4.4 Implement slide image generation job with per-slide status, retry, partial failure recording, and resumable job state.
-- [ ] 4.5 Implement single-slide regenerate using the stored prompt plan and current generation config.
-- [ ] 4.6 Implement single-slide edit using current slide image plus user instruction, with edit history and restore metadata.
-- [ ] 4.7 Implement deck detail/list APIs and artifact integration so generated decks appear in Studio artifact lists.
-- [ ] 4.8 Add integration tests for the full mocked workflow: create deck, generate outline, confirm outline, generate prompt plan, confirm prompt plan, generate images, regenerate one slide, edit one slide, recover deck state.
+- [x] 4.1 Implement `SlideDeckService` for deck creation from selected NotebookLM-Lite source IDs and frozen source-context snapshots.
+- [x] 4.2 Implement outline generation job and PATCH confirmation/edit endpoint.
+- [x] 4.3 Implement prompt-plan generation job and PATCH confirmation/edit endpoint.
+- [x] 4.4 Implement slide image generation job with per-slide status, retry, partial failure recording, and resumable job state.
+- [x] 4.5 Implement single-slide regenerate using the stored prompt plan and current generation config.
+- [x] 4.6 Implement single-slide edit using current slide image plus user instruction, with edit history and restore metadata.
+- [x] 4.7 Implement deck detail/list APIs and artifact integration so generated decks appear in Studio artifact lists.
+- [x] 4.8 Add integration tests for the full mocked workflow: create deck, generate outline, confirm outline, generate prompt plan, confirm prompt plan, generate images, regenerate one slide, edit one slide, recover deck state.
 
 ## 5. PPTX Export
 
