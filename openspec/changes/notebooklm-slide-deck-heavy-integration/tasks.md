@@ -65,12 +65,12 @@
 
 ## 8. Required Validation
 
-- [ ] 8.0 Run `openspec validate notebooklm-slide-deck-heavy-integration --strict` if the OpenSpec CLI is available in the implementation environment, and fix any spec/task formatting errors before application code work proceeds.
-- [ ] 8.1 Run `python -m compileall -q backend` and backend tests for slide deck services, providers, routes, repository, and export.
-- [ ] 8.2 Run frontend unit tests and `npm run build` in `frontend/`.
-- [ ] 8.3 Start the backend and frontend locally.
-- [ ] 8.4 Use a real browser and mouse clicks to test the integrated frontend flow: select sources, click the PPT/Slide Deck Studio button, open the slide deck workspace, generate outline, confirm outline, generate prompt plan, confirm prompt plan, generate slides, select slides, run single-slide regenerate or edit, export PPTX, and download it.
-- [ ] 8.5 Run at least one real model smoke test using local NotebookLM-Lite `config.yaml` plus PPT-related model parameters from `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml`. The test SHALL generate a small deck with real slide images, not mocked images.
-- [ ] 8.6 Verify the exported PPTX exists, can be opened or inspected, and contains the expected number of slides.
-- [ ] 8.7 Verify no local secrets, generated outputs, data directories, screenshots with keys, or AIPPT local `config.yaml` files are staged.
-- [ ] 8.8 Record validation commands, browser actions, model/provider roles used, generated deck size, PPTX path, and any failures or skipped items in the final implementation report.
+- [x] 8.0 Run `openspec validate notebooklm-slide-deck-heavy-integration --strict` if the OpenSpec CLI is available in the implementation environment, and fix any spec/task formatting errors before application code work proceeds.
+- [x] 8.1 Run `python -m compileall -q backend` and backend tests for slide deck services, providers, routes, repository, and export.
+- [x] 8.2 Run frontend unit tests and `npm run build` in `frontend/`.
+- [x] 8.3 Start the backend and frontend locally.
+- [x] 8.4 Use a real browser and mouse clicks to test the integrated frontend flow: select sources, click the PPT/Slide Deck Studio button, open the slide deck workspace, generate outline, confirm outline, generate prompt plan, confirm prompt plan, generate slides, select slides, run single-slide regenerate or edit, export PPTX, and download it.
+- [x] 8.5 Run at least one real model smoke test using local NotebookLM-Lite `config.yaml` plus PPT-related model parameters from `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml`. The test SHALL generate a small deck with real slide images, not mocked images.
+- [x] 8.6 Verify the exported PPTX exists, can be opened or inspected, and contains the expected number of slides.
+- [x] 8.7 Verify no local secrets, generated outputs, data directories, screenshots with keys, or AIPPT local `config.yaml` files are staged.
+- [x] 8.8 Record validation commands, browser actions, model/provider roles used, generated deck size, PPTX path, and any failures or skipped items in the final implementation report.

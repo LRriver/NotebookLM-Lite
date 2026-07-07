@@ -14,6 +14,7 @@ from backend.domain.slide_deck import (
 )
 from backend.infrastructure.image_providers.raw_multimodal_provider import (
     RawMultimodalImageProvider,
+    RequestsJsonClient,
 )
 
 
@@ -43,10 +44,15 @@ class FakeImageHttpClient:
     def __init__(self, payload):
         self.payload = payload
         self.calls = []
+        self.downloads = []
 
     async def post_json(self, url, headers, json_payload, timeout):
         self.calls.append((url, headers, json_payload, timeout))
         return self.payload
+
+    async def get_bytes(self, url, timeout):
+        self.downloads.append((url, timeout))
+        return b"downloaded-image"
 
 
 @pytest.mark.asyncio
@@ -268,6 +274,84 @@ async def test_raw_multimodal_image_provider_builds_generation_payload():
 
 
 @pytest.mark.asyncio
+async def test_raw_multimodal_image_provider_supports_openai_image_generations_adapter():
+    http = FakeImageHttpClient({"images": [{"url": "https://cdn.example/generated.png"}]})
+    provider = RawMultimodalImageProvider(
+        ModelProfile(
+            model="gpt-image-2",
+            base_url="https://image.example/v1",
+            api_key="image-key",
+            adapter="openai_image",
+        ),
+        http_client=http,
+    )
+
+    result = await provider.generate_image("Create slide", aspect_ratio="16:9", quality="2K")
+
+    assert result.base64_data == base64.b64encode(b"downloaded-image").decode()
+    url, headers, payload, timeout = http.calls[0]
+    assert url == "https://image.example/v1/images/generations"
+    assert headers["Authorization"] == "Bearer image-key"
+    assert payload["model"] == "gpt-image-2"
+    assert payload["prompt"].startswith("Create slide")
+    assert payload["size"] == "1024x576"
+    assert timeout == 180
+    assert http.downloads == [("https://cdn.example/generated.png", 180)]
+
+
+@pytest.mark.asyncio
+async def test_raw_multimodal_image_provider_supports_siliconflow_image_generations_adapter():
+    http = FakeImageHttpClient({"images": [{"url": "https://cdn.example/generated.png"}]})
+    provider = RawMultimodalImageProvider(
+        ModelProfile(
+            model="Qwen/Qwen-Image",
+            base_url="https://api.siliconflow.cn/v1",
+            api_key="image-key",
+            adapter="siliconflow_image",
+        ),
+        http_client=http,
+    )
+
+    result = await provider.generate_image("Create slide", aspect_ratio="16:9", quality="2K")
+
+    assert result.base64_data == base64.b64encode(b"downloaded-image").decode()
+    url, _headers, payload, _timeout = http.calls[0]
+    assert url == "https://api.siliconflow.cn/v1/images/generations"
+    assert payload["model"] == "Qwen/Qwen-Image"
+    assert payload["image_size"] == "1024x576"
+    assert "size" not in payload
+
+
+@pytest.mark.asyncio
+async def test_generated_image_url_download_rejects_localhost():
+    client = RequestsJsonClient()
+
+    with pytest.raises(ValueError, match="not allowed"):
+        await client.get_bytes("http://127.0.0.1/private.png", 1)
+
+
+@pytest.mark.asyncio
+async def test_generated_image_url_download_rejects_non_image_content(monkeypatch: pytest.MonkeyPatch):
+    class FakeResponse:
+        status_code = 200
+        headers = {"Content-Type": "text/plain"}
+        content = b"not an image"
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size: int):
+            yield b"not an image"
+
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: FakeResponse())
+
+    client = RequestsJsonClient()
+
+    with pytest.raises(ValueError, match="did not return an image"):
+        await client.get_bytes("https://8.8.8.8/file.txt", 1)
+
+
+@pytest.mark.asyncio
 async def test_raw_multimodal_image_provider_builds_edit_payload():
     edited_b64 = base64.b64encode(b"edited-image").decode()
     source_b64 = base64.b64encode(b"source-image").decode()
@@ -289,6 +373,26 @@ async def test_raw_multimodal_image_provider_builds_edit_payload():
     assert content[0]["type"] == "text"
     assert "Make title shorter" in content[0]["text"]
     assert content[1]["image_url"]["url"] == f"data:image/png;base64,{source_b64}"
+
+
+@pytest.mark.asyncio
+async def test_raw_multimodal_image_provider_rejects_generation_only_adapter_for_edit():
+    source_b64 = base64.b64encode(b"source-image").decode()
+    http = FakeImageHttpClient({"images": [{"url": "https://cdn.example/edited.png"}]})
+    provider = RawMultimodalImageProvider(
+        ModelProfile(
+            model="Qwen/Qwen-Image",
+            base_url="https://api.siliconflow.cn/v1",
+            api_key="edit-key",
+            adapter="siliconflow_image",
+        ),
+        http_client=http,
+    )
+
+    with pytest.raises(ValueError, match="does not support image editing"):
+        await provider.edit_image(source_b64, "Make title shorter")
+
+    assert http.calls == []
 
 
 @pytest.mark.asyncio

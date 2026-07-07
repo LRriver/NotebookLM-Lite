@@ -118,7 +118,7 @@ class LiteLLMProvider(LLMProviderInterface):
             payload["api_key"] = self.profile.api_key
         if self.profile.base_url:
             payload["api_base"] = self.profile.base_url
-        if self.profile.thinking is not None:
+        if self.profile.thinking is not None and self.profile.thinking.type != "disabled":
             payload["thinking"] = {"type": self.profile.thinking.type}
         return payload
 

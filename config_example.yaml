@@ -32,10 +32,13 @@ api:
       response_format: "mp3"
       stream: true
     image_model:
+      # Use "openai_image" for /images/generations providers that accept size,
+      # "siliconflow_image" for SiliconFlow /images/generations providers that
+      # accept image_size, or "raw_chat_multimodal" for chat/completions gateways.
       model: "gpt-image-2"
       base_url: "https://api.example.com/v1"
       api_key: "sk-your-image-key"
-      adapter: "raw_chat_multimodal"
+      adapter: "openai_image"
     edit_model:
       model: "gpt-image-2"
       base_url: "https://api.example.com/v1"

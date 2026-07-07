@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Download, Edit3, FileText, Loader2, RefreshCw, Wand2 } from 'lucide-react';
 import { translations, useLanguage, type GeneratedContent } from '../App';
 
@@ -67,6 +67,7 @@ export const SlideDeckWorkspace: React.FC<SlideDeckWorkspaceProps> = ({ deckId, 
     const [outlineValid, setOutlineValid] = useState(true);
     const [promptPlanValid, setPromptPlanValid] = useState(true);
     const [activeJob, setActiveJob] = useState<JobResponse | null>(null);
+    const loadSeq = useRef(0);
 
     const selectedSlide = useMemo(() => {
         if (!deck?.slides?.length) return null;
@@ -74,15 +75,22 @@ export const SlideDeckWorkspace: React.FC<SlideDeckWorkspaceProps> = ({ deckId, 
     }, [deck, selectedSlideId]);
 
     useEffect(() => {
+        const sequence = loadSeq.current + 1;
+        loadSeq.current = sequence;
         let active = true;
+        setDeck(null);
+        setSelectedSlideId(null);
+        setIsBusy(false);
+        setActiveJob(null);
+        setDownloadUrl('');
+        setError('');
         const boot = async () => {
-            setError('');
             try {
                 if (deckId) {
                     const loaded = await requestJson<SlideDeck>(`/api/slide-decks/${deckId}`);
-                    if (active) {
+                    if (active && sequence === loadSeq.current) {
                         applyDeck(loaded);
-                        await resumeRunningJob(loaded);
+                        await resumeRunningJob(loaded, sequence);
                     }
                     return;
                 }
@@ -98,13 +106,13 @@ export const SlideDeckWorkspace: React.FC<SlideDeckWorkspaceProps> = ({ deckId, 
                         config: { aspect_ratio: '16:9', page_count: 6 }
                     })
                 });
-                if (active) {
+                if (active && sequence === loadSeq.current) {
                     applyDeck(created);
                     onDeckReady?.(created.id);
                     publishDeckArtifact(created);
                 }
             } catch (err: any) {
-                if (active) setError(err.message || String(err));
+                if (active && sequence === loadSeq.current) setError(err.message || String(err));
             }
         };
         boot();
@@ -128,35 +136,39 @@ export const SlideDeckWorkspace: React.FC<SlideDeckWorkspaceProps> = ({ deckId, 
         });
     };
 
-    const refreshDeck = async (targetDeckId = deck?.id) => {
+    const refreshDeck = async (targetDeckId = deck?.id, sequence = loadSeq.current) => {
         if (!targetDeckId) return;
-        applyDeck(await requestJson<SlideDeck>(`/api/slide-decks/${targetDeckId}`));
+        const latest = await requestJson<SlideDeck>(`/api/slide-decks/${targetDeckId}`);
+        if (sequence === loadSeq.current) applyDeck(latest);
     };
 
-    const resumeRunningJob = async (loadedDeck: SlideDeck) => {
+    const resumeRunningJob = async (loadedDeck: SlideDeck, sequence = loadSeq.current) => {
         if (loadedDeck.stage !== 'slides_generating' || loadedDeck.status !== 'generating') return;
         try {
             const response = await requestJson<JobListResponse>(`/api/slide-decks/${loadedDeck.id}/jobs`);
+            if (sequence !== loadSeq.current) return;
             const runningJob = response.jobs
                 .filter(job => job.stage === 'slide_generation' && ['pending', 'running'].includes(job.status))
                 .sort((left, right) => timestamp(right.created_at) - timestamp(left.created_at))[0];
             if (runningJob) {
                 setActiveJob(runningJob);
-                await pollJob(runningJob.id, loadedDeck.id);
+                await pollJob(runningJob.id, loadedDeck.id, sequence);
             }
         } catch (err: any) {
-            setError(err.message || String(err));
+            if (sequence === loadSeq.current) setError(err.message || String(err));
         }
     };
 
     const runJobAndRefresh = async (path: string) => {
         if (!deck) return null;
+        const sequence = loadSeq.current;
         setIsBusy(true);
         setError('');
         try {
             const isSlideGeneration = path.endsWith('/generate/jobs');
             const jobPath = isSlideGeneration ? `${path}?background=true` : path;
             const job = await requestJson<JobResponse>(jobPath, { method: 'POST' });
+            if (sequence !== loadSeq.current) return null;
             setActiveJob(job);
             if (job.status === 'failed') {
                 setError(job.error || 'Job failed');
@@ -183,29 +195,32 @@ export const SlideDeckWorkspace: React.FC<SlideDeckWorkspaceProps> = ({ deckId, 
                 });
             }
             if (job.id && isSlideGeneration) {
-                await pollJob(job.id, deck.id);
+                await pollJob(job.id, deck.id, sequence);
             } else if (job.id) {
                 try {
-                    setActiveJob(await requestJson<JobResponse>(`/api/slide-decks/jobs/${job.id}`));
+                    const latestJob = await requestJson<JobResponse>(`/api/slide-decks/jobs/${job.id}`);
+                    if (sequence === loadSeq.current) setActiveJob(latestJob);
                 } catch {
                     // Job endpoint is best-effort for progress display; deck state remains authoritative.
                 }
             }
-            await refreshDeck(deck.id);
+            await refreshDeck(deck.id, sequence);
+            if (sequence !== loadSeq.current) return null;
             return job;
         } catch (err: any) {
-            setError(err.message || String(err));
+            if (sequence === loadSeq.current) setError(err.message || String(err));
             return null;
         } finally {
-            setIsBusy(false);
+            if (sequence === loadSeq.current) setIsBusy(false);
         }
     };
 
-    const pollJob = async (jobId: string, targetDeckId = deck?.id) => {
+    const pollJob = async (jobId: string, targetDeckId = deck?.id, sequence = loadSeq.current) => {
         for (let attempt = 0; attempt < 120; attempt += 1) {
             const latest = await requestJson<JobResponse>(`/api/slide-decks/jobs/${jobId}`);
+            if (sequence !== loadSeq.current) return latest;
             setActiveJob(latest);
-            await refreshDeck(targetDeckId);
+            await refreshDeck(targetDeckId, sequence);
             if (latest.status !== 'running' && latest.status !== 'pending') {
                 if (latest.status === 'failed') setError(latest.error || 'Job failed');
                 return latest;
@@ -217,73 +232,84 @@ export const SlideDeckWorkspace: React.FC<SlideDeckWorkspaceProps> = ({ deckId, 
 
     const confirmOutline = async () => {
         if (!deck?.outline) return;
+        const sequence = loadSeq.current;
         setIsBusy(true);
         setError('');
         try {
-            applyDeck(await requestJson<SlideDeck>(`/api/slide-decks/${deck.id}/outline`, {
+            const nextDeck = await requestJson<SlideDeck>(`/api/slide-decks/${deck.id}/outline`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ outline: deck.outline, confirmed: true })
-            }));
+            });
+            if (sequence === loadSeq.current) applyDeck(nextDeck);
         } catch (err: any) {
-            setError(err.message || String(err));
+            if (sequence === loadSeq.current) setError(err.message || String(err));
         } finally {
-            setIsBusy(false);
+            if (sequence === loadSeq.current) setIsBusy(false);
         }
     };
 
     const confirmPromptPlan = async () => {
         if (!deck?.prompt_plan) return;
+        const sequence = loadSeq.current;
         setIsBusy(true);
         setError('');
         try {
-            applyDeck(await requestJson<SlideDeck>(`/api/slide-decks/${deck.id}/prompt-plan`, {
+            const nextDeck = await requestJson<SlideDeck>(`/api/slide-decks/${deck.id}/prompt-plan`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ prompt_plan: deck.prompt_plan, confirmed: true })
-            }));
+            });
+            if (sequence === loadSeq.current) applyDeck(nextDeck);
         } catch (err: any) {
-            setError(err.message || String(err));
+            if (sequence === loadSeq.current) setError(err.message || String(err));
         } finally {
-            setIsBusy(false);
+            if (sequence === loadSeq.current) setIsBusy(false);
         }
     };
 
     const regenerateSlide = async () => {
         if (!deck || !selectedSlide) return;
+        const sequence = loadSeq.current;
         setIsBusy(true);
         setError('');
         try {
-            applyDeck(await requestJson<SlideDeck>(`/api/slide-decks/${deck.id}/slides/${selectedSlide.id}/regenerate`, { method: 'POST' }));
+            const nextDeck = await requestJson<SlideDeck>(`/api/slide-decks/${deck.id}/slides/${selectedSlide.id}/regenerate`, { method: 'POST' });
+            if (sequence === loadSeq.current) applyDeck(nextDeck);
         } catch (err: any) {
-            setError(err.message || String(err));
+            if (sequence === loadSeq.current) setError(err.message || String(err));
         } finally {
-            setIsBusy(false);
+            if (sequence === loadSeq.current) setIsBusy(false);
         }
     };
 
     const editSlide = async () => {
         if (!deck || !selectedSlide || !editInstruction.trim()) return;
+        const sequence = loadSeq.current;
         setIsBusy(true);
         setError('');
         try {
-            applyDeck(await requestJson<SlideDeck>(`/api/slide-decks/${deck.id}/slides/${selectedSlide.id}/edit`, {
+            const nextDeck = await requestJson<SlideDeck>(`/api/slide-decks/${deck.id}/slides/${selectedSlide.id}/edit`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ instruction: editInstruction.trim() })
-            }));
-            setEditInstruction('');
+            });
+            if (sequence === loadSeq.current) {
+                applyDeck(nextDeck);
+                setEditInstruction('');
+            }
         } catch (err: any) {
-            setError(err.message || String(err));
+            if (sequence === loadSeq.current) setError(err.message || String(err));
         } finally {
-            setIsBusy(false);
+            if (sequence === loadSeq.current) setIsBusy(false);
         }
     };
 
     const exportPptx = async () => {
         if (!deck) return;
+        const sequence = loadSeq.current;
         const job = await runJobAndRefresh(`/api/slide-decks/${deck.id}/export/jobs`);
-        if (job?.status === 'succeeded') {
+        if (job?.status === 'succeeded' && sequence === loadSeq.current) {
             setDownloadUrl(`/api/slide-decks/${deck.id}/download?format=pptx`);
             publishDeckArtifact({ ...deck, stage: 'exported' });
         }

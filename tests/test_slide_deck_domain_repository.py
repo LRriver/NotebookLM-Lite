@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -240,6 +242,24 @@ async def test_seekdb_repository_persists_slide_deck_state_after_restart(tmp_pat
     assert (await reopened.get_slide_export(export.id)).checksum == "sha256-pptx"
     assert (await reopened.get_slide_export(export.id)).download_ref.endswith("durable.pptx")
     assert (await reopened.get_slide_deck_job(job.id)).status == JobStatus.FAILED
+
+
+def test_seekdb_repository_uses_separate_embedded_path_for_pyseekdb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, path: str) -> None:
+            calls.append(path)
+            Path(path).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setitem(sys.modules, "pyseekdb", types.SimpleNamespace(Client=FakeClient))
+
+    db_path = tmp_path / "knowledge.db"
+    repo = SeekDBRepository(db_path)
+
+    assert calls == [str(tmp_path / "knowledge.seekdb")]
+    assert db_path.is_file()
+    assert repo.seekdb_client is not None
 
 
 def test_slide_deck_file_store_writes_ignored_files_and_returns_metadata(tmp_path: Path):

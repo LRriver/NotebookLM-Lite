@@ -334,6 +334,163 @@ describe('SlideDeckWorkspace', () => {
         await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/slide-decks/jobs/job_slides', undefined));
         expect(await screen.findByAltText('Intro')).toHaveAttribute('src', '/api/slide-decks/deck_1/slides/slide_1/image');
     });
+
+    test('resets busy job state when opening a different deck', async () => {
+        const generatingDeck = deckPatch({
+            outline,
+            prompt_plan: promptPlan,
+            stage: 'slides_generating',
+            status: 'generating',
+            slides: [slide({ status: 'generating', asset_id: null })]
+        });
+        const nextDeck = {
+            ...createdDeck,
+            id: 'deck_2',
+            title: 'Next Deck',
+            stage: 'created',
+            status: 'draft'
+        };
+        const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url === '/api/slide-decks/deck_1') return json(generatingDeck);
+            if (url === '/api/slide-decks/deck_1/jobs') {
+                return json({
+                    jobs: [{ id: 'job_slides', deck_id: 'deck_1', stage: 'slide_generation', status: 'running', progress: 0.4 }],
+                    total: 1
+                });
+            }
+            if (url === '/api/slide-decks/jobs/job_slides') {
+                return json({ id: 'job_slides', deck_id: 'deck_1', stage: 'slide_generation', status: 'running', progress: 0.4 });
+            }
+            if (url === '/api/slide-decks/deck_2') return json(nextDeck);
+            return json(nextDeck);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const { rerender } = renderWorkspace({ deckId: 'deck_1' });
+
+        expect(await screen.findByText('running')).toBeInTheDocument();
+
+        rerender(
+            <LanguageContext.Provider value={{ lang: 'zh', setLang: vi.fn() }}>
+                <SlideDeckWorkspace
+                    deckId="deck_2"
+                    sourceIds={['src_1']}
+                    onBack={vi.fn()}
+                    onArtifactGenerated={vi.fn()}
+                />
+            </LanguageContext.Provider>
+        );
+
+        const outlineButton = await screen.findByRole('button', { name: /生成大纲/ });
+        await waitFor(() => expect(outlineButton).not.toBeDisabled());
+    });
+
+    test('ignores stale direct action responses after switching decks', async () => {
+        const outlineReadyDeck = deckPatch({
+            title: 'Old Deck',
+            outline,
+            stage: 'outline_ready',
+            status: 'planning'
+        });
+        const nextDeck = {
+            ...createdDeck,
+            id: 'deck_2',
+            title: 'Next Deck',
+            stage: 'created',
+            status: 'draft'
+        };
+        const confirmResponse = deferred<Response>();
+        const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            const method = init?.method || 'GET';
+            if (url === '/api/slide-decks/deck_1' && method === 'GET') return json(outlineReadyDeck);
+            if (url === '/api/slide-decks/deck_1/outline' && method === 'PATCH') return confirmResponse.promise;
+            if (url === '/api/slide-decks/deck_2' && method === 'GET') return json(nextDeck);
+            return json(nextDeck);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const { rerender } = renderWorkspace({ deckId: 'deck_1' });
+        fireEvent.click(await screen.findByRole('button', { name: /确认大纲/ }));
+
+        rerender(
+            <LanguageContext.Provider value={{ lang: 'zh', setLang: vi.fn() }}>
+                <SlideDeckWorkspace
+                    deckId="deck_2"
+                    sourceIds={['src_1']}
+                    onBack={vi.fn()}
+                    onArtifactGenerated={vi.fn()}
+                />
+            </LanguageContext.Provider>
+        );
+
+        expect(await screen.findByText('Next Deck')).toBeInTheDocument();
+        confirmResponse.resolve(json(deckPatch({ title: 'Old Deck Confirmed', outline, stage: 'outline_confirmed' })));
+
+        await waitFor(() => expect(screen.getByText('Next Deck')).toBeInTheDocument());
+        expect(screen.queryByText('Old Deck Confirmed')).not.toBeInTheDocument();
+    });
+
+    test('ignores stale export responses after switching decks', async () => {
+        const readyDeck = deckPatch({
+            title: 'Ready Deck',
+            outline,
+            prompt_plan: promptPlan,
+            stage: 'slides_ready',
+            status: 'ready',
+            slides: [slide()]
+        });
+        const nextDeck = {
+            ...createdDeck,
+            id: 'deck_2',
+            title: 'Next Deck',
+            stage: 'created',
+            status: 'draft'
+        };
+        const finalRefresh = deferred<Response>();
+        let deckOneReads = 0;
+        const artifactGenerated = vi.fn();
+        const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            const method = init?.method || 'GET';
+            if (url === '/api/slide-decks/deck_1' && method === 'GET') {
+                deckOneReads += 1;
+                return deckOneReads === 1 ? json(readyDeck) : finalRefresh.promise;
+            }
+            if (url === '/api/slide-decks/deck_1/export/jobs' && method === 'POST') {
+                return json({ id: 'job_export', deck_id: 'deck_1', stage: 'export', status: 'succeeded', progress: 1 });
+            }
+            if (url === '/api/slide-decks/jobs/job_export') {
+                return json({ id: 'job_export', deck_id: 'deck_1', stage: 'export', status: 'succeeded', progress: 1 });
+            }
+            if (url === '/api/slide-decks/deck_2' && method === 'GET') return json(nextDeck);
+            return json(nextDeck);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const { rerender } = renderWorkspace({ deckId: 'deck_1', onArtifactGenerated: artifactGenerated });
+        fireEvent.click(await screen.findByRole('button', { name: /导出 PPTX/ }));
+        await waitFor(() => expect(deckOneReads).toBe(2));
+
+        rerender(
+            <LanguageContext.Provider value={{ lang: 'zh', setLang: vi.fn() }}>
+                <SlideDeckWorkspace
+                    deckId="deck_2"
+                    sourceIds={['src_1']}
+                    onBack={vi.fn()}
+                    onArtifactGenerated={artifactGenerated}
+                />
+            </LanguageContext.Provider>
+        );
+
+        expect(await screen.findByText('Next Deck')).toBeInTheDocument();
+        finalRefresh.resolve(json(readyDeck));
+
+        await waitFor(() => expect(screen.getByText('Next Deck')).toBeInTheDocument());
+        expect(screen.queryByText('下载 PPTX')).not.toBeInTheDocument();
+        expect(artifactGenerated).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Ready Deck' }));
+    });
 });
 
 function slide(patch: Record<string, unknown> = {}) {
@@ -361,6 +518,16 @@ function json(payload: unknown) {
         json: async () => payload,
         text: async () => JSON.stringify(payload)
     } as Response;
+}
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
 }
 
 const minimalConfig = {

@@ -80,7 +80,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.seekdb_client = self._try_pyseekdb(self.db_path)
+        self.seekdb_client = self._try_pyseekdb(self.db_path.parent / f"{self.db_path.stem}.seekdb")
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
