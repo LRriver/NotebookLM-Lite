@@ -37,6 +37,16 @@ api:
       voice: test-audio-model:alex
       response_format: mp3
       stream: true
+    image_model:
+      model: test-image-model
+      base_url: https://image.example.test/v1
+      api_key: test-image-key
+      adapter: raw_chat_multimodal
+    edit_model:
+      model: test-edit-model
+      base_url: https://edit.example.test/v1
+      api_key: test-edit-key
+      adapter: raw_chat_multimodal
 storage:
   vector_store_type: seekdb
   seekdb_path: ./data/test_seekdb.db

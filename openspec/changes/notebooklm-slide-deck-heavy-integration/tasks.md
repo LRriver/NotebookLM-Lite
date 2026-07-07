@@ -15,13 +15,13 @@
 
 ## 3. Model Runtime Integration
 
-- [ ] 3.1 Port or adapt `new_pro/AIPPT` outline and prompt-plan schemas into NotebookLM-Lite backend models.
-- [ ] 3.2 Generate deck outlines through NotebookLM-Lite `LiteLLMProvider.generate_structured(...)`, using selected source context and Pydantic validation.
-- [ ] 3.3 Generate slide prompt plans through NotebookLM-Lite `LiteLLMProvider.generate_structured(...)` from confirmed outlines.
-- [ ] 3.4 Add NotebookLM-Lite image generation provider behavior for `api.models.image_model`, using LiteLLM where supported or a shared raw OpenAI-compatible multimodal adapter behind the same model-profile boundary.
-- [ ] 3.5 Add NotebookLM-Lite image edit provider behavior for `api.models.edit_model`, using LiteLLM where supported or the shared raw multimodal adapter behind the same model-profile boundary.
-- [ ] 3.6 Remove integrated-path dependency on AIPPT `APIConfig`, `config.py`, `model_profiles.py`, and standalone API config forms.
-- [ ] 3.7 Add tests for text profile use, structured validation failure/retry, image provider payloads, edit provider payloads, config redaction, and missing-model error messages.
+- [x] 3.1 Port or adapt `new_pro/AIPPT` outline and prompt-plan schemas into NotebookLM-Lite backend models.
+- [x] 3.2 Generate deck outlines through NotebookLM-Lite `LiteLLMProvider.generate_structured(...)`, using selected source context and Pydantic validation.
+- [x] 3.3 Generate slide prompt plans through NotebookLM-Lite `LiteLLMProvider.generate_structured(...)` from confirmed outlines.
+- [x] 3.4 Add NotebookLM-Lite image generation provider behavior for `api.models.image_model`, using LiteLLM where supported or a shared raw OpenAI-compatible multimodal adapter behind the same model-profile boundary.
+- [x] 3.5 Add NotebookLM-Lite image edit provider behavior for `api.models.edit_model`, using LiteLLM where supported or the shared raw multimodal adapter behind the same model-profile boundary.
+- [x] 3.6 Remove integrated-path dependency on AIPPT `APIConfig`, `config.py`, `model_profiles.py`, and standalone API config forms.
+- [x] 3.7 Add tests for text profile use, structured validation failure/retry, image provider payloads, edit provider payloads, config redaction, and missing-model error messages.
 
 ## 4. Slide Deck Workflow And API
 
