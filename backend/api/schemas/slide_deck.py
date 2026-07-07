@@ -59,6 +59,8 @@ class SlideDeckJobResponse(BaseModel):
     progress: float
     result_ref: str | None = None
     error: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class SlideDeckJobListResponse(BaseModel):

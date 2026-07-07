@@ -44,16 +44,16 @@
 
 ## 6. Frontend Slide Deck Workspace
 
-- [ ] 6.1 Add a dedicated slide deck workspace route or app mode opened from the Studio PPT card and existing Slide Deck artifact cards.
-- [ ] 6.2 Add a clear "Back to notebook" action that returns to the main three-column workbench without losing deck state.
-- [ ] 6.3 Reuse AIPPT's interaction structure, adapted to NotebookLM-Lite style: left slide/page list, center preview, right workflow/edit/export panel.
-- [ ] 6.4 Implement source-to-outline UI with loading/error states, editable outline, and explicit confirmation.
-- [ ] 6.5 Implement outline-to-prompt-plan UI with loading/error states, editable per-slide design/prompt content, and explicit confirmation.
-- [ ] 6.6 Implement slide generation UI with per-page progress, image preview, partial failure display, and deck recovery after refresh.
-- [ ] 6.7 Implement single-slide regenerate, single-slide edit, edit history display, and current-slide selection.
-- [ ] 6.8 Implement PPTX export and download controls.
-- [ ] 6.9 Ensure the UI uses NotebookLM-Lite model settings and does not expose AIPPT's standalone API config form.
-- [ ] 6.10 Add frontend unit tests for navigation, confirmations, slide list/preview, edit/regenerate controls, export controls, and error states.
+- [x] 6.1 Add a dedicated slide deck workspace route or app mode opened from the Studio PPT card and existing Slide Deck artifact cards.
+- [x] 6.2 Add a clear "Back to notebook" action that returns to the main three-column workbench without losing deck state.
+- [x] 6.3 Reuse AIPPT's interaction structure, adapted to NotebookLM-Lite style: left slide/page list, center preview, right workflow/edit/export panel.
+- [x] 6.4 Implement source-to-outline UI with loading/error states, editable outline, and explicit confirmation.
+- [x] 6.5 Implement outline-to-prompt-plan UI with loading/error states, editable per-slide design/prompt content, and explicit confirmation.
+- [x] 6.6 Implement slide generation UI with per-page progress, image preview, partial failure display, and deck recovery after refresh.
+- [x] 6.7 Implement single-slide regenerate, single-slide edit, edit history display, and current-slide selection.
+- [x] 6.8 Implement PPTX export and download controls.
+- [x] 6.9 Ensure the UI uses NotebookLM-Lite model settings and does not expose AIPPT's standalone API config form.
+- [x] 6.10 Add frontend unit tests for navigation, confirmations, slide list/preview, edit/regenerate controls, export controls, and error states.
 
 ## 7. Documentation And Config
 

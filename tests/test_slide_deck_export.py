@@ -113,6 +113,11 @@ def test_slide_deck_export_job_creates_downloadable_image_based_pptx(tmp_path: P
     )
     assert download.content == Path(export.file_path).read_bytes()
 
+    image = client.get(f"/api/slide-decks/{deck.id}/slides/{deck.slides[0].id}/image")
+    assert image.status_code == 200
+    assert image.headers["content-type"].startswith("image/png")
+    assert image.content == ONE_PIXEL_PNG
+
 
 def test_slide_deck_export_rejects_deck_without_generated_slide_images(tmp_path: Path):
     client, repo, deck = build_export_client(tmp_path)

@@ -253,6 +253,7 @@ describe('Markdown rendering', () => {
                 config={config}
                 contents={contents}
                 onContentGenerated={vi.fn()}
+                onOpenSlideDeck={vi.fn()}
             />
         );
 

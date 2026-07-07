@@ -69,6 +69,8 @@ def _job_response(job: SlideDeckJob) -> SlideDeckJobResponse:
         progress=job.progress,
         result_ref=job.result_ref,
         error=job.error,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
     )
 
 
@@ -155,8 +157,14 @@ async def patch_prompt_plan(
 
 
 @router.post("/slide-decks/{deck_id}/generate/jobs", response_model=SlideDeckJobResponse)
-async def generate_slides(deck_id: str, service: SlideDeckService = Depends(get_slide_deck_service)):
+async def generate_slides(
+    deck_id: str,
+    background: bool = False,
+    service: SlideDeckService = Depends(get_slide_deck_service),
+):
     try:
+        if background:
+            return _job_response(await service.queue_generate_slides(deck_id))
         return _job_response(await service.generate_slides(deck_id))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -185,6 +193,22 @@ async def edit_slide(
         return _deck_response(await service.edit_slide(deck_id, slide_id, request.instruction))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/slide-decks/{deck_id}/slides/{slide_id}/image")
+async def get_slide_image(
+    deck_id: str,
+    slide_id: str,
+    service: SlideDeckService = Depends(get_slide_deck_service),
+):
+    try:
+        asset = await service.get_slide_image_asset(deck_id, slide_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    path = Path(asset.file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="slide image file not found")
+    return FileResponse(path=str(path), media_type=asset.mime_type)
 
 
 @router.post("/slide-decks/{deck_id}/export/jobs", response_model=SlideDeckJobResponse)

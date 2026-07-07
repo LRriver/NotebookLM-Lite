@@ -9,6 +9,7 @@ interface StudioPanelProps {
     config: ApiConfig;
     contents: GeneratedContent[];
     onContentGenerated: (content: GeneratedContent) => void;
+    onOpenSlideDeck: (deckId: string | null) => void;
 }
 
 const TOOLS = [
@@ -23,7 +24,7 @@ const TOOLS = [
     { id: 'infographic', icon: Image, labelKey: 'infographic', styleClass: 'tool-infographic' }
 ];
 
-export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, contents, onContentGenerated }) => {
+export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, contents, onContentGenerated, onOpenSlideDeck }) => {
     const { lang } = useLanguage();
     const t = translations[lang];
     const [activeTool, setActiveTool] = useState<string>('podcast');
@@ -39,7 +40,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, con
 
     const selectTool = (toolId: string) => {
         if (toolId === 'ppt_outline') {
-            alert(lang === 'zh' ? 'PPT 功能已开发完成，即将上线' : 'PPT is complete and coming soon.');
+            if (sourceIds.length === 0) {
+                alert(lang === 'zh' ? '请先选择来源' : 'Select sources first.');
+                return;
+            }
+            onOpenSlideDeck(null);
             return;
         }
         if (toolId === 'video_overview') {
@@ -214,7 +219,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, con
                 )}
                 {contents.map(content => (
                     <div key={content.id} className="artifact-card">
-                        <button className="artifact-head" onClick={() => setExpandedId(expandedId === content.id ? null : content.id)}>
+                        <button
+                            className="artifact-head"
+                            onClick={() => {
+                                if (content.type === 'slide_deck' && typeof content.payload?.deck_id === 'string') {
+                                    onOpenSlideDeck(content.payload.deck_id);
+                                    return;
+                                }
+                                setExpandedId(expandedId === content.id ? null : content.id);
+                            }}
+                        >
                             <div>
                                 <div className="text-sm font-semibold text-gray-800">{content.title}</div>
                                 <div className="text-[11px] text-gray-500">{content.type}</div>

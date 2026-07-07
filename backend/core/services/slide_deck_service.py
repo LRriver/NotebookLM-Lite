@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Any
 
@@ -94,6 +95,12 @@ class SlideDeckService:
 
     async def generate_outline(self, deck_id: str) -> SlideDeckJob:
         deck = await self._require_deck(deck_id)
+        if deck.stage not in {
+            SlideDeckStage.CREATED,
+            SlideDeckStage.OUTLINE_READY,
+            SlideDeckStage.OUTLINE_CONFIRMED,
+        }:
+            raise ValueError("outline can only be generated before prompt planning starts")
         now = utc_now()
         job = SlideDeckJob(
             deck_id=deck.id,
@@ -129,7 +136,11 @@ class SlideDeckService:
     ) -> SlideDeckProject:
         deck = await self._require_deck(deck_id)
         deck.outline = outline
-        if confirmed:
+        if confirmed and deck.stage in {
+            SlideDeckStage.CREATED,
+            SlideDeckStage.OUTLINE_READY,
+            SlideDeckStage.OUTLINE_CONFIRMED,
+        }:
             deck.stage = SlideDeckStage.OUTLINE_CONFIRMED
         deck.updated_at = utc_now()
         return await self.repository.save_slide_deck(deck)
@@ -172,17 +183,18 @@ class SlideDeckService:
     ) -> SlideDeckProject:
         deck = await self._require_deck(deck_id)
         deck.prompt_plan = prompt_plan
-        if confirmed:
+        if confirmed and deck.stage in {
+            SlideDeckStage.OUTLINE_CONFIRMED,
+            SlideDeckStage.PROMPT_PLAN_READY,
+            SlideDeckStage.PROMPT_PLAN_CONFIRMED,
+        }:
             deck.stage = SlideDeckStage.PROMPT_PLAN_CONFIRMED
         deck.updated_at = utc_now()
         return await self.repository.save_slide_deck(deck)
 
     async def generate_slides(self, deck_id: str) -> SlideDeckJob:
         deck = await self._require_deck(deck_id)
-        can_start = deck.stage == SlideDeckStage.PROMPT_PLAN_CONFIRMED
-        can_resume = deck.stage == SlideDeckStage.SLIDES_GENERATING and deck.status == SlideDeckStatus.FAILED
-        if not deck.prompt_plan or not (can_start or can_resume):
-            raise ValueError("confirmed prompt plan is required")
+        self._validate_slide_generation_ready(deck)
         job = SlideDeckJob(
             deck_id=deck.id,
             stage=SlideDeckJobStage.SLIDE_GENERATION,
@@ -190,6 +202,38 @@ class SlideDeckService:
             started_at=utc_now(),
         )
         await self.repository.save_slide_deck_job(job)
+        return await self._run_slide_generation_job(deck.id, job.id)
+
+    async def queue_generate_slides(self, deck_id: str) -> SlideDeckJob:
+        deck = await self._require_deck(deck_id)
+        self._validate_slide_generation_ready(deck)
+        job = SlideDeckJob(
+            deck_id=deck.id,
+            stage=SlideDeckJobStage.SLIDE_GENERATION,
+            status=JobStatus.RUNNING,
+            started_at=utc_now(),
+        )
+        await self.repository.save_slide_deck_job(job)
+        deck.stage = SlideDeckStage.SLIDES_GENERATING
+        deck.status = SlideDeckStatus.GENERATING
+        deck.error = None
+        deck.slides = self._sync_slides_from_prompt_plan(deck)
+        deck.updated_at = utc_now()
+        await self.repository.save_slide_deck(deck)
+        asyncio.create_task(self._run_slide_generation_job(deck.id, job.id))
+        return job
+
+    def _validate_slide_generation_ready(self, deck: SlideDeckProject) -> None:
+        can_start = deck.stage == SlideDeckStage.PROMPT_PLAN_CONFIRMED
+        can_resume = deck.stage == SlideDeckStage.SLIDES_GENERATING and deck.status == SlideDeckStatus.FAILED
+        if not deck.prompt_plan or not (can_start or can_resume):
+            raise ValueError("confirmed prompt plan is required")
+
+    async def _run_slide_generation_job(self, deck_id: str, job_id: str) -> SlideDeckJob:
+        deck = await self._require_deck(deck_id)
+        job = await self.repository.get_slide_deck_job(job_id)
+        if not job:
+            raise ValueError("slide deck job not found")
         deck.stage = SlideDeckStage.SLIDES_GENERATING
         deck.status = SlideDeckStatus.GENERATING
         deck.error = None
@@ -367,6 +411,16 @@ class SlideDeckService:
         if not matching:
             return None
         return sorted(matching, key=lambda export: export.created_at, reverse=True)[0]
+
+    async def get_slide_image_asset(self, deck_id: str, slide_id: str) -> SlideAsset:
+        deck = await self._require_deck(deck_id)
+        slide = self._slide(deck, slide_id)
+        if not slide.asset_id:
+            raise ValueError("slide image not found")
+        asset = await self.repository.get_slide_asset(slide.asset_id)
+        if not asset:
+            raise ValueError("slide image not found")
+        return asset
 
     async def _store_image_asset(
         self,

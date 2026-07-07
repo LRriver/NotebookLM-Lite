@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -87,6 +88,12 @@ class FailingSecondImageProvider(FakeImageProvider):
         )()
 
 
+class SlowImageProvider(FakeImageProvider):
+    async def generate_image(self, prompt, aspect_ratio="16:9", quality="2K"):
+        await asyncio.sleep(0.1)
+        return await super().generate_image(prompt, aspect_ratio=aspect_ratio, quality=quality)
+
+
 def build_client(tmp_path: Path, *, page_count: int = 1, image_provider=None):
     repo = InMemoryKnowledgeRepository()
     source = KnowledgeSource(
@@ -99,8 +106,6 @@ def build_client(tmp_path: Path, *, page_count: int = 1, image_provider=None):
 
     async def seed():
         await repo.save_source(source)
-
-    import asyncio
 
     asyncio.run(seed())
 
@@ -244,6 +249,63 @@ def test_slide_deck_api_enforces_confirmation_gates(tmp_path: Path):
     blocked_slides = client.post(f"/api/slide-decks/{deck_id}/generate/jobs")
     assert blocked_slides.status_code == 400
     assert "confirmed prompt plan" in blocked_slides.json()["detail"]
+
+
+def test_slide_generation_can_start_as_background_job_with_inspectable_progress(tmp_path: Path):
+    client, _ = build_client(tmp_path, page_count=2, image_provider=SlowImageProvider())
+
+    created = client.post(
+        "/api/slide-decks",
+        json={"title": "Deck", "source_ids": ["src_alpha"], "config": {"page_count": 2}},
+    )
+    deck_id = created.json()["id"]
+    client.post(f"/api/slide-decks/{deck_id}/outline/jobs")
+    outline = client.get(f"/api/slide-decks/{deck_id}").json()["outline"]
+    client.patch(f"/api/slide-decks/{deck_id}/outline", json={"outline": outline, "confirmed": True})
+    client.post(f"/api/slide-decks/{deck_id}/prompt-plan/jobs")
+    prompt_plan = client.get(f"/api/slide-decks/{deck_id}").json()["prompt_plan"]
+    client.patch(f"/api/slide-decks/{deck_id}/prompt-plan", json={"prompt_plan": prompt_plan, "confirmed": True})
+
+    job = client.post(f"/api/slide-decks/{deck_id}/generate/jobs?background=true")
+
+    assert job.status_code == 200
+    assert job.json()["stage"] == "slide_generation"
+    assert job.json()["status"] == "running"
+    started = client.get(f"/api/slide-decks/{deck_id}").json()
+    assert started["stage"] == "slides_generating"
+    assert started["status"] == "generating"
+    assert [slide["status"] for slide in started["slides"]] == ["generating", "pending"]
+
+    detail = client.get(f"/api/slide-decks/jobs/{job.json()['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["stage"] == "slide_generation"
+
+
+def test_outline_generation_cannot_rewind_ready_deck(tmp_path: Path):
+    client, _ = build_client(tmp_path)
+
+    created = client.post(
+        "/api/slide-decks",
+        json={"title": "Deck", "source_ids": ["src_alpha"], "config": {"page_count": 1}},
+    )
+    deck_id = created.json()["id"]
+    client.post(f"/api/slide-decks/{deck_id}/outline/jobs")
+    outline = client.get(f"/api/slide-decks/{deck_id}").json()["outline"]
+    client.patch(f"/api/slide-decks/{deck_id}/outline", json={"outline": outline, "confirmed": True})
+    client.post(f"/api/slide-decks/{deck_id}/prompt-plan/jobs")
+    prompt_plan = client.get(f"/api/slide-decks/{deck_id}").json()["prompt_plan"]
+    client.patch(f"/api/slide-decks/{deck_id}/prompt-plan", json={"prompt_plan": prompt_plan, "confirmed": True})
+    client.post(f"/api/slide-decks/{deck_id}/generate/jobs")
+    ready = client.get(f"/api/slide-decks/{deck_id}").json()
+    assert ready["stage"] == "slides_ready"
+
+    response = client.post(f"/api/slide-decks/{deck_id}/outline/jobs")
+
+    assert response.status_code == 400
+    assert "before prompt planning" in response.json()["detail"]
+    unchanged = client.get(f"/api/slide-decks/{deck_id}").json()
+    assert unchanged["stage"] == "slides_ready"
+    assert unchanged["slides"][0]["status"] == "succeeded"
 
 
 def test_slide_generation_job_records_partial_failure_and_keeps_recoverable_state(tmp_path: Path):
