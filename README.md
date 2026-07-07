@@ -4,7 +4,7 @@
 
 NotebookLM-Lite is an open-source NotebookLM-style AI knowledge workspace for local files, grounded RAG chat, notes, interactive Studio artifacts, and long-form podcast generation. It is built for people who like the Google NotebookLM workflow but want a hackable, self-hosted project with their own model endpoints, their own document pipeline, and a clear backend architecture.
 
-NotebookLM-Lite is not affiliated with Google NotebookLM. The goal is to bring most of the NotebookLM learning and research experience into an open project: source-grounded answers, citations, mind maps, flashcards, quizzes, reports, data tables, infographics, podcast/audio overviews, notes, and future slide/video workflows.
+NotebookLM-Lite is not affiliated with Google NotebookLM. The goal is to bring most of the NotebookLM learning and research experience into an open project: source-grounded answers, citations, mind maps, flashcards, quizzes, reports, data tables, infographics, podcast/audio overviews, notes, native slide deck workflows, and future video workflows.
 
 ![NotebookLM-Lite workbench demo](docs/assets/notebooklm-lite-demo.gif)
 
@@ -32,11 +32,12 @@ That makes the project useful as a NotebookLM alternative, a RAG notebook starte
 - **Hybrid RAG retrieval**: SeekDB combines lexical BM25-style recall, optional embeddings, optional rerank, selected-source filtering, and citations.
 - **Streaming grounded chat**: ask questions over selected sources, render Markdown answers, and keep citations attached to retrieved chunks.
 - **Notes as first-class knowledge**: create notes, save chat answers as notes, and convert notes back into sources for later RAG.
-- **Interactive Studio artifacts**: generate Mind Maps, FAQ, Flashcards/Quiz, Reports/Study Guides, Data Tables, SVG Infographics, and Podcast scripts from selected sources.
+- **Interactive Studio artifacts**: generate Mind Maps, FAQ, Flashcards/Quiz, Reports/Study Guides, Data Tables, SVG Infographics, Podcast scripts, and Slide Decks from selected sources.
 - **NotebookLM-like study UX**: flashcards flip, quizzes show feedback and scores, mind maps expand, tables render as tables, and artifacts can be downloaded as Markdown/JSON/SVG where applicable.
+- **Native Slide Deck workspace**: generate a deck outline, confirm/edit it, generate a per-slide image prompt plan, confirm/edit it, render slide images, regenerate or edit one slide, and export an image-based PPTX.
 - **Podcast and Audio Overview workflow**: structured podcast scripts are generated with Pydantic validation and can be expanded toward controllable durations up to 30 minutes; speech generation is optional when a compatible audio model is configured.
 - **Unified model runtime**: LiteLLM manages text generation, embeddings, rerank, and OpenAI-compatible speech profiles. OpenAI-compatible, Anthropic, Gemini/GenAI-style, and custom gateway deployments can be configured from `config.yaml`.
-- **Extensible backend boundaries**: FastAPI owns resource APIs, while longer workflows are isolated for future LangGraph orchestration, Deep Research, Slide Deck, and Video Overview support.
+- **Extensible backend boundaries**: FastAPI owns resource APIs, while longer workflows are isolated for future LangGraph orchestration, Deep Research, richer Slide Deck automation, and Video Overview support.
 
 ## Capability Map
 
@@ -54,7 +55,7 @@ That makes the project useful as a NotebookLM alternative, a RAG notebook starte
 | Podcast / Audio Overview | Available | Script generation is core; audio download is available when speech config is valid. |
 | Runtime model configuration | Available | Separate text, embedding, rerank, speech, image, and edit profiles. |
 | Deep Research | Placeholder | API/job boundary exists so future research output can be saved as a source. |
-| Slide Deck / PPT | In progress | Native workflow API and image-based PPTX export are available; full editor workspace is being integrated. |
+| Slide Deck / PPT | Available | Native Slide Deck workspace with two confirmation steps, generated slide previews, single-slide regenerate/edit, and image-based PPTX export. |
 | Video Overview | Placeholder | Studio card is present and shows an in-development notice. |
 
 ## Architecture
@@ -62,14 +63,15 @@ That makes the project useful as a NotebookLM alternative, a RAG notebook starte
 ```text
 frontend/
   React + Vite workbench
-  SourcePanel, ChatPanel, NotesPanel, StudioPanel, ArtifactViewer
+  SourcePanel, ChatPanel, NotesPanel, StudioPanel, ArtifactViewer, SlideDeckWorkspace
 
 backend/
-  FastAPI routes for sources, chat, notes, artifacts, podcast, config
+  FastAPI routes for sources, chat, notes, artifacts, podcast, slide decks, config
   Docling parser + Chonkie chunking
   SeekDB repository and vector-store adapter
   LiteLLM provider for text, structured output, embeddings, and rerank
   Podcast workflow with Pydantic structured output
+  Native slide deck workflow with generated image assets and PPTX export
 ```
 
 Key backend choices:
@@ -80,6 +82,7 @@ Key backend choices:
 - **SeekDB** as the project knowledge repository.
 - **LiteLLM** as the unified model access layer.
 - **Pydantic structured output** for Studio artifacts and podcast scripts.
+- **Native Slide Deck workflow** integrated into NotebookLM-Lite state, jobs, artifacts, model config, and downloads. It is based on the verified `/Users/lzj/proj/notebook/new_pro/AIPPT` implementation path, not `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT`.
 
 ## Getting Started
 
@@ -103,6 +106,8 @@ Edit `config.yaml` and fill in the profiles you want to use:
 - `api.models.embedding_model`: optional vector retrieval
 - `api.models.rerank_model`: optional rerank
 - `api.models.audio_model`: optional speech/audio generation
+- `api.models.image_model`: slide image generation
+- `api.models.edit_model`: single-slide image editing
 - `storage.seekdb_path`: local knowledge database
 - `documents.chunking`: Chonkie/simple chunking settings
 
@@ -141,7 +146,9 @@ Open `http://localhost:5173`.
    - Report / Study Guide
    - Data Table
    - Infographic
-7. Download generated artifacts as Markdown, JSON, SVG, transcript, or audio where supported.
+   - Slide Deck / PPT
+7. For Slide Decks, open the dedicated workspace, generate and confirm the outline, generate and confirm the prompt plan, render slide images, optionally regenerate or edit one slide, then export/download the PPTX.
+8. Download generated artifacts as Markdown, JSON, SVG, transcript, PPTX, or audio where supported.
 
 ## Testing
 
@@ -164,18 +171,27 @@ npm run test:e2e -- --project=chromium
 OpenSpec:
 
 ```bash
-openspec validate notebooklm-text-closure --strict
+openspec validate notebooklm-slide-deck-heavy-integration --strict
 ```
 
 ## Current Scope and Roadmap
 
-NotebookLM-Lite already covers the core text-based NotebookLM loop: sources, cited chat, notes, Studio study artifacts, data tables, infographics, and podcast scripts/audio. The next major areas are:
+NotebookLM-Lite already covers the core NotebookLM-style loop: sources, cited chat, notes, Studio study artifacts, data tables, infographics, podcast scripts/audio, and native Slide Deck generation with image-based PPTX export. The next major areas are:
 
-- Full Slide Deck/PPT integration using the AIPPT adapter boundary.
 - Real Video Overview generation instead of the current placeholder card.
 - Stronger Deep Research workflows that can search, synthesize, and save research reports as sources.
 - More export targets, including CSV/Sheets-style table export and richer artifact sharing.
 - More source types, such as URLs, audio, images, YouTube, and Google Drive-style integrations.
+
+## Slide Deck Notes
+
+The Slide Deck integration is intentionally native to NotebookLM-Lite:
+
+- It uses the same source selection, LiteLLM/runtime model configuration, SeekDB persistence, job APIs, artifact list, and download flow as the rest of the app.
+- The workflow has two human confirmation points: outline confirmation and prompt-plan confirmation.
+- Phase 1 exports a PPTX where each slide is a generated full-slide image. This is a PPTX export, not a promise that every PowerPoint element is a native editable shape.
+- Local real-model testing can use PPT-related model parameters from `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml`, but credentials must stay in local ignored config files.
+- `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT` is not the implementation source for this integration.
 
 ## License
 

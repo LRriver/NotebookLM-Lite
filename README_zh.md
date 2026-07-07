@@ -4,7 +4,7 @@
 
 NotebookLM-Lite 是一个开源的 NotebookLM 风格 AI 知识工作台，用于把本地资料变成可问答、可整理、可生成内容的知识库。它面向长文档阅读、课程学习、论文/手册分析、产品资料整理、播客脚本生成、RAG 应用原型等场景，目标是在一个可自托管、可改造、可接入自定义模型的项目里，复刻大部分 NotebookLM 的核心体验。
 
-NotebookLM-Lite 与 Google NotebookLM 没有关联。这个项目借鉴的是 NotebookLM 的产品形态：添加资料、基于资料问答、保存笔记、生成思维导图、学习卡片、测验、报告、数据表、信息图和播客等 Studio 内容。
+NotebookLM-Lite 与 Google NotebookLM 没有关联。这个项目借鉴的是 NotebookLM 的产品形态：添加资料、基于资料问答、保存笔记、生成思维导图、学习卡片、测验、报告、数据表、信息图、播客和 Slide Deck 等 Studio 内容，并为后续 Video Overview 预留扩展空间。
 
 ![NotebookLM-Lite 工作台演示](docs/assets/notebooklm-lite-demo.gif)
 
@@ -32,11 +32,12 @@ NotebookLM 这类产品正在成为处理长资料、学习材料、研究笔记
 - **混合 RAG 检索**：SeekDB 支持 BM25 风格词法召回、可选 embedding、可选 rerank、按选中 source 限定检索，并返回 citation。
 - **流式资料问答**：Chat 面板支持基于资料的流式回答、Markdown 渲染和引用来源展示。
 - **笔记进入知识闭环**：可以手写笔记、把回答保存为笔记，也可以把笔记转换成新的 source 继续问答。
-- **Studio 文本闭环**：支持生成思维图谱、FAQ、Flashcards/Quiz、报告/学习指南、数据表、SVG 信息图、播客脚本等。
+- **Studio 内容闭环**：支持生成思维图谱、FAQ、Flashcards/Quiz、报告/学习指南、数据表、SVG 信息图、播客脚本、Slide Deck 等。
 - **更接近 NotebookLM 的交互体验**：卡片可翻面，Quiz 可答题/看分数/重做，思维图谱可展开，数据表按表格渲染，信息图安全渲染为图片。
+- **原生 Slide Deck 工作区**：从选中资料生成大纲，确认/编辑大纲，再生成逐页图片提示计划，确认/编辑提示计划，渲染幻灯片图片，支持单页重新生成、单页编辑和 image-based PPTX export。
 - **播客 / Audio Overview 工作流**：播客脚本使用 Pydantic 结构化输出约束，可向最长 30 分钟扩展；配置语音模型后可生成并下载音频。
 - **统一模型接入**：LiteLLM 统一管理文本生成、embedding、rerank、OpenAI-compatible speech；可接 OpenAI-compatible、Anthropic、Gemini/GenAI 风格接口或自建网关。
-- **面向扩展的架构边界**：FastAPI 负责资源接口，长流程为 LangGraph、Deep Research、Slide Deck、Video Overview 等后续能力预留边界。
+- **面向扩展的架构边界**：FastAPI 负责资源接口，长流程为 LangGraph、Deep Research、更丰富的 Slide Deck 自动化、Video Overview 等后续能力预留边界。
 
 ## 功能矩阵
 
@@ -54,7 +55,7 @@ NotebookLM 这类产品正在成为处理长资料、学习材料、研究笔记
 | Podcast / Audio Overview | 已支持 | 脚本生成是核心；配置语音模型后可下载音频。 |
 | 运行时模型配置 | 已支持 | 文本、embedding、rerank、语音、图像、编辑模型分开配置。 |
 | Deep Research | 占位边界 | 已有 API/job placeholder，后续可把研究报告保存为 source。 |
-| Slide Deck / PPT | 集成中 | 已支持原生工作流 API 和基于生成图片的 PPTX export，完整编辑工作区正在集成。 |
+| Slide Deck / PPT | 已支持 | 原生 Slide Deck 工作区，两步确认、幻灯片图片预览、单页重生成/编辑、基于生成图片的 PPTX export。 |
 | Video Overview | 占位入口 | Studio 卡片已存在，点击提示功能开发中。 |
 
 ## 架构
@@ -62,14 +63,15 @@ NotebookLM 这类产品正在成为处理长资料、学习材料、研究笔记
 ```text
 frontend/
   React + Vite 工作台
-  SourcePanel, ChatPanel, NotesPanel, StudioPanel, ArtifactViewer
+  SourcePanel, ChatPanel, NotesPanel, StudioPanel, ArtifactViewer, SlideDeckWorkspace
 
 backend/
-  FastAPI routes: sources, chat, notes, artifacts, podcast, config
+  FastAPI routes: sources, chat, notes, artifacts, podcast, slide decks, config
   Docling parser + Chonkie chunking
   SeekDB repository and vector-store adapter
   LiteLLM provider for text, structured output, embeddings, rerank
   Podcast workflow with Pydantic structured output
+  Native slide deck workflow with generated image assets and PPTX export
 ```
 
 关键技术选择：
@@ -80,6 +82,7 @@ backend/
 - **SeekDB**：作为项目知识库与 artifact repository。
 - **LiteLLM**：统一模型调用入口。
 - **Pydantic structured output**：约束 Studio artifacts 和播客脚本生成格式。
+- **原生 Slide Deck workflow**：接入 NotebookLM-Lite 的状态、job、artifact、模型配置和下载体系。集成来源是已验证的 `/Users/lzj/proj/notebook/new_pro/AIPPT` 路径，不从 `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT` 迁移未验证实现。
 
 ## 快速开始
 
@@ -103,6 +106,8 @@ cp config_example.yaml config.yaml
 - `api.models.embedding_model`：可选向量召回
 - `api.models.rerank_model`：可选 rerank
 - `api.models.audio_model`：可选语音/音频生成
+- `api.models.image_model`：Slide Deck 图片生成
+- `api.models.edit_model`：单页图片编辑
 - `storage.seekdb_path`：本地知识库路径
 - `documents.chunking`：Chonkie/simple chunk 参数
 
@@ -141,7 +146,9 @@ npm run dev
    - 报告 / 学习指南
    - 数据表
    - 信息图
-7. 根据 artifact 类型下载 Markdown、JSON、SVG、transcript 或音频。
+   - Slide Deck / PPT
+7. 生成 Slide Deck 时，进入专用工作区，先生成并确认大纲，再生成并确认提示计划，然后生成幻灯片图片，可按页重生成或编辑，最后导出并下载 PPTX。
+8. 根据 artifact 类型下载 Markdown、JSON、SVG、transcript、PPTX 或音频。
 
 ## 测试
 
@@ -164,18 +171,27 @@ npm run test:e2e -- --project=chromium
 OpenSpec：
 
 ```bash
-openspec validate notebooklm-text-closure --strict
+openspec validate notebooklm-slide-deck-heavy-integration --strict
 ```
 
 ## 当前范围与路线图
 
-NotebookLM-Lite 已覆盖 NotebookLM 文本闭环的大部分核心能力：资料输入、带引用问答、笔记、Studio 学习类 artifacts、数据表、信息图、播客脚本和可选音频。接下来重点会补齐：
+NotebookLM-Lite 已覆盖 NotebookLM 风格闭环的大部分核心能力：资料输入、带引用问答、笔记、Studio 学习类 artifacts、数据表、信息图、播客脚本和可选音频，以及原生 Slide Deck 生成和基于图片的 PPTX export。接下来重点会补齐：
 
-- 完整 Slide Deck / PPT 集成，基于当前 AIPPT adapter 边界继续推进。
 - 真正的视频概览生成，目前前端是占位提示。
 - 更完整的 Deep Research 工作流：联网检索、综合报告、保存为 source。
 - 更多导出方式，例如 CSV/Sheets 风格表格导出和 artifact 分享。
 - 更多 source 类型，例如 URL、音频、图片、YouTube、Google Drive 风格接入。
+
+## Slide Deck 说明
+
+Slide Deck 集成是 NotebookLM-Lite 的原生能力：
+
+- 使用同一套 source 选择、LiteLLM/runtime 模型配置、SeekDB 持久化、job API、artifact 列表和下载流程。
+- 工作流保留两层人工确认：大纲确认、提示计划确认。
+- Phase 1 导出的 PPTX 中每一页是生成的整页图片。这是 PPTX export，不承诺每个 PowerPoint 元素都是原生可编辑形状。
+- 本地真实模型测试可以使用 `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml` 中的 PPT 相关模型参数，但凭据必须只保存在本地 ignored config。
+- `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT` 不是本次集成的实现来源。
 
 ## 许可证
 

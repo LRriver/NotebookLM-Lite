@@ -57,11 +57,11 @@
 
 ## 7. Documentation And Config
 
-- [ ] 7.1 Update `config_example.yaml` only if needed to document image/edit model fields for slide deck generation.
-- [ ] 7.2 Update README and README_zn to describe native Slide Deck generation, two confirmation steps, single-slide edit/regenerate, and PPTX export.
-- [ ] 7.3 Document that local testing can use PPT model parameters from `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml`, but those credentials must remain local and ignored.
-- [ ] 7.4 Document that `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT` is not the integration source for this change.
-- [ ] 7.5 Keep product wording honest: Phase 1 exports PPTX with generated slide visuals and does not promise native editable PowerPoint elements.
+- [x] 7.1 Update `config_example.yaml` only if needed to document image/edit model fields for slide deck generation.
+- [x] 7.2 Update README and README_zh.md to describe native Slide Deck generation, two confirmation steps, single-slide edit/regenerate, and PPTX export.
+- [x] 7.3 Document that local testing can use PPT model parameters from `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml`, but those credentials must remain local and ignored.
+- [x] 7.4 Document that `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT` is not the integration source for this change.
+- [x] 7.5 Keep product wording honest: Phase 1 exports PPTX with generated slide visuals and does not promise native editable PowerPoint elements.
 
 ## 8. Required Validation
 
