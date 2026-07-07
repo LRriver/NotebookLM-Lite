@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ...core.interfaces.knowledge_repository import KnowledgeRepositoryInterface
+from ...domain.slide_deck import SlideAsset, SlideDeckExport, SlideDeckJob, SlideDeckProject
 from ...domain.source import Artifact, Job, KnowledgeChunk, KnowledgeSource, Note, SourceStatus, utc_now
 
 
@@ -133,6 +134,36 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 payload TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS slide_decks (
+                id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS slide_assets (
+                id TEXT PRIMARY KEY,
+                deck_id TEXT NOT NULL,
+                slide_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_slide_assets_deck_id ON slide_assets(deck_id);
+            CREATE TABLE IF NOT EXISTS slide_exports (
+                id TEXT PRIMARY KEY,
+                deck_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_slide_exports_deck_id ON slide_exports(deck_id);
+            CREATE TABLE IF NOT EXISTS slide_deck_jobs (
+                id TEXT PRIMARY KEY,
+                deck_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_slide_deck_jobs_deck_id ON slide_deck_jobs(deck_id);
             """
         )
         self._conn.commit()
@@ -330,3 +361,106 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
     async def get_job(self, job_id: str) -> Job | None:
         row = self._conn.execute("SELECT payload FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return Job.model_validate_json(row["payload"]) if row else None
+
+    async def save_slide_deck(self, deck: SlideDeckProject) -> SlideDeckProject:
+        deck.updated_at = utc_now()
+        self._conn.execute(
+            """
+            INSERT INTO slide_decks(id, payload, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload=excluded.payload,
+                updated_at=excluded.updated_at
+            """,
+            (deck.id, _dump_model(deck), deck.created_at.isoformat(), deck.updated_at.isoformat()),
+        )
+        self._conn.commit()
+        return deck
+
+    async def get_slide_deck(self, deck_id: str) -> SlideDeckProject | None:
+        row = self._conn.execute("SELECT payload FROM slide_decks WHERE id = ?", (deck_id,)).fetchone()
+        return SlideDeckProject.model_validate_json(row["payload"]) if row else None
+
+    async def list_slide_decks(self) -> list[SlideDeckProject]:
+        rows = self._conn.execute("SELECT payload FROM slide_decks ORDER BY updated_at DESC").fetchall()
+        return [SlideDeckProject.model_validate_json(row["payload"]) for row in rows]
+
+    async def save_slide_asset(self, asset: SlideAsset) -> SlideAsset:
+        self._conn.execute(
+            """
+            INSERT INTO slide_assets(id, deck_id, slide_id, payload, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET payload=excluded.payload
+            """,
+            (asset.id, asset.deck_id, asset.slide_id, _dump_model(asset), asset.created_at.isoformat()),
+        )
+        self._conn.commit()
+        return asset
+
+    async def get_slide_asset(self, asset_id: str) -> SlideAsset | None:
+        row = self._conn.execute("SELECT payload FROM slide_assets WHERE id = ?", (asset_id,)).fetchone()
+        return SlideAsset.model_validate_json(row["payload"]) if row else None
+
+    async def save_slide_export(self, export: SlideDeckExport) -> SlideDeckExport:
+        export.updated_at = utc_now()
+        self._conn.execute(
+            """
+            INSERT INTO slide_exports(id, deck_id, payload, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload=excluded.payload,
+                updated_at=excluded.updated_at
+            """,
+            (
+                export.id,
+                export.deck_id,
+                _dump_model(export),
+                export.created_at.isoformat(),
+                export.updated_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+        return export
+
+    async def get_slide_export(self, export_id: str) -> SlideDeckExport | None:
+        row = self._conn.execute("SELECT payload FROM slide_exports WHERE id = ?", (export_id,)).fetchone()
+        return SlideDeckExport.model_validate_json(row["payload"]) if row else None
+
+    async def list_slide_exports(self, deck_id: str) -> list[SlideDeckExport]:
+        rows = self._conn.execute(
+            "SELECT payload FROM slide_exports WHERE deck_id = ? ORDER BY created_at DESC",
+            (deck_id,),
+        ).fetchall()
+        return [SlideDeckExport.model_validate_json(row["payload"]) for row in rows]
+
+    async def save_slide_deck_job(self, job: SlideDeckJob) -> SlideDeckJob:
+        job.updated_at = utc_now()
+        self._conn.execute(
+            """
+            INSERT INTO slide_deck_jobs(id, deck_id, payload, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload=excluded.payload,
+                updated_at=excluded.updated_at
+            """,
+            (
+                job.id,
+                job.deck_id,
+                _dump_model(job),
+                job.created_at.isoformat(),
+                job.updated_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+        return job
+
+    async def get_slide_deck_job(self, job_id: str) -> SlideDeckJob | None:
+        row = self._conn.execute("SELECT payload FROM slide_deck_jobs WHERE id = ?", (job_id,)).fetchone()
+        return SlideDeckJob.model_validate_json(row["payload"]) if row else None
+
+    async def list_slide_deck_jobs(self, deck_id: str) -> list[SlideDeckJob]:
+        rows = self._conn.execute(
+            "SELECT payload FROM slide_deck_jobs WHERE deck_id = ? ORDER BY created_at DESC",
+            (deck_id,),
+        ).fetchall()
+        return [SlideDeckJob.model_validate_json(row["payload"]) for row in rows]

@@ -7,11 +7,11 @@
 
 ## 2. Backend Domain, Persistence, And Jobs
 
-- [ ] 2.1 Add Pydantic/domain models for slide deck projects, outlines, prompt plans, slides, slide assets, edit history, export records, and stage/job statuses.
-- [ ] 2.2 Extend the repository abstraction and SeekDB-backed implementation to persist and retrieve slide deck records, slide assets, edit history, exports, and associated jobs.
-- [ ] 2.3 Store generated image/PPTX files under ignored output/data paths and persist only metadata, checksums, paths, and download references.
-- [ ] 2.4 Add fake repository/test fixtures for slide deck state so backend tests do not require real model calls.
-- [ ] 2.5 Add tests for create/get/list deck state, backend restart persistence, source lineage, file metadata, and job status transitions.
+- [x] 2.1 Add Pydantic/domain models for slide deck projects, outlines, prompt plans, slides, slide assets, edit history, export records, and stage/job statuses.
+- [x] 2.2 Extend the repository abstraction and SeekDB-backed implementation to persist and retrieve slide deck records, slide assets, edit history, exports, and associated jobs.
+- [x] 2.3 Store generated image/PPTX files under ignored output/data paths and persist only metadata, checksums, paths, and download references.
+- [x] 2.4 Add fake repository/test fixtures for slide deck state so backend tests do not require real model calls.
+- [x] 2.5 Add tests for create/get/list deck state, backend restart persistence, source lineage, file metadata, and job status transitions.
 
 ## 3. Model Runtime Integration
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
+from ...domain.slide_deck import SlideAsset, SlideDeckExport, SlideDeckJob, SlideDeckProject
 from ...domain.source import Artifact, Job, KnowledgeChunk, KnowledgeSource, Note
 
 
@@ -78,4 +79,48 @@ class KnowledgeRepositoryInterface(ABC):
 
     @abstractmethod
     async def get_job(self, job_id: str) -> Optional[Job]:
+        pass
+
+    @abstractmethod
+    async def save_slide_deck(self, deck: SlideDeckProject) -> SlideDeckProject:
+        pass
+
+    @abstractmethod
+    async def get_slide_deck(self, deck_id: str) -> Optional[SlideDeckProject]:
+        pass
+
+    @abstractmethod
+    async def list_slide_decks(self) -> list[SlideDeckProject]:
+        pass
+
+    @abstractmethod
+    async def save_slide_asset(self, asset: SlideAsset) -> SlideAsset:
+        pass
+
+    @abstractmethod
+    async def get_slide_asset(self, asset_id: str) -> Optional[SlideAsset]:
+        pass
+
+    @abstractmethod
+    async def save_slide_export(self, export: SlideDeckExport) -> SlideDeckExport:
+        pass
+
+    @abstractmethod
+    async def get_slide_export(self, export_id: str) -> Optional[SlideDeckExport]:
+        pass
+
+    @abstractmethod
+    async def list_slide_exports(self, deck_id: str) -> list[SlideDeckExport]:
+        pass
+
+    @abstractmethod
+    async def save_slide_deck_job(self, job: SlideDeckJob) -> SlideDeckJob:
+        pass
+
+    @abstractmethod
+    async def get_slide_deck_job(self, job_id: str) -> Optional[SlideDeckJob]:
+        pass
+
+    @abstractmethod
+    async def list_slide_deck_jobs(self, deck_id: str) -> list[SlideDeckJob]:
         pass
