@@ -1,9 +1,9 @@
 ## 1. Baseline And Provenance
 
-- [ ] 1.1 Confirm the current working tree state with `git status --short --branch` and record any unrelated user changes before editing code.
-- [ ] 1.2 Inspect `/Users/lzj/proj/notebook/new_pro/AIPPT` and document the exact files reused or ported; do not use `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT` as an implementation source unless separately verified.
-- [ ] 1.3 Read NotebookLM-Lite current model config/runtime code and confirm text, image, and edit model profile fields are sufficient for slide deck generation.
-- [ ] 1.4 Inspect local `config.yaml` only for runtime testing; do not print, commit, or copy secrets. If PPT model values from `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml` are needed, copy them into local NotebookLM-Lite `config.yaml` manually or through ignored local config only.
+- [x] 1.1 Confirm the current working tree state with `git status --short --branch` and record any unrelated user changes before editing code.
+- [x] 1.2 Inspect `/Users/lzj/proj/notebook/new_pro/AIPPT` and document the exact files reused or ported; do not use `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT` as an implementation source unless separately verified.
+- [x] 1.3 Read NotebookLM-Lite current model config/runtime code and confirm text, image, and edit model profile fields are sufficient for slide deck generation.
+- [x] 1.4 Inspect local `config.yaml` only for runtime testing; do not print, commit, or copy secrets. If PPT model values from `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml` are needed, copy them into local NotebookLM-Lite `config.yaml` manually or through ignored local config only.
 
 ## 2. Backend Domain, Persistence, And Jobs
 
