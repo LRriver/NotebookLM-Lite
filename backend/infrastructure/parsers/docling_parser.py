@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 from pathlib import Path
-from typing import Any
 
 
 class ParsedDocument(dict):

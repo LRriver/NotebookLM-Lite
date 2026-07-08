@@ -12,7 +12,6 @@ from backend.core.services.slide_deck_planning_service import SlideDeckPlanningS
 from backend.domain.slide_deck import (
     SlideDeckOutline,
     SlideOutline,
-    SlidePromptPlan,
     SlidePromptPlanSet,
 )
 from backend.infrastructure.image_providers.raw_multimodal_provider import (

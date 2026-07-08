@@ -9,7 +9,6 @@ import uuid
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from ..interfaces.vector_store import VectorStoreInterface
-from ..interfaces.document_parser import DocumentParserInterface
 from ...domain.document import ProcessedDocument, DocumentChunk, DocumentType
 from ...infrastructure.parsers.parser_factory import ParserFactory
 

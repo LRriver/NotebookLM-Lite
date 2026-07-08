@@ -4,7 +4,7 @@ Parser Factory
 Factory for creating appropriate document parsers based on file type.
 """
 from typing import Dict, Type
-from ...core.interfaces.document_parser import DocumentParserInterface, DocumentType
+from ...core.interfaces.document_parser import DocumentParserInterface
 from .pdf_parser import PDFParser
 from .docx_parser import DocxParser
 from .text_parser import TextParser

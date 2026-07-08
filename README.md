@@ -1,5 +1,7 @@
 # NotebookLM-Lite
 
+[![CI](https://github.com/LRriver/NotebookLM-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/LRriver/NotebookLM-Lite/actions/workflows/ci.yml)
+
 [中文](./README_zh.md) | [English](./README.md)
 
 NotebookLM-Lite is an open-source NotebookLM-style AI knowledge workspace for local files, grounded RAG chat, notes, interactive Studio artifacts, and long-form podcast generation. It is built for people who like the Google NotebookLM workflow but want a hackable, self-hosted project with their own model endpoints, their own document pipeline, and a clear backend architecture.
