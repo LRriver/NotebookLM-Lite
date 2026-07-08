@@ -39,6 +39,10 @@ class PodcastGenerateRequest(BaseModel):
 
 class PodcastGenerateResponse(BaseModel):
     """播客生成响应"""
+    artifact_id: Optional[str] = Field(None, description="持久化的播客 artifact ID")
+    title: str = Field(default="Podcast Script", description="播客标题")
+    speakers: List[str] = Field(default_factory=list, description="播客说话人")
+    turns: List[Dict[str, str]] = Field(default_factory=list, description="结构化对话轮次")
     audio_url: Optional[str] = Field(None, description="音频下载URL")
     audio_status: Dict = Field(default_factory=dict, description="音频生成状态")
     audio_filename: Optional[str] = None

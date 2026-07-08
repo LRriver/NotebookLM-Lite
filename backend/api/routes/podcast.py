@@ -3,6 +3,8 @@ Podcast Routes
 
 Handles podcast generation with controllable duration.
 """
+from typing import Callable
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 import os
@@ -14,12 +16,24 @@ from ..schemas.podcast import (
     PodcastScriptResponse
 )
 from ...config import get_settings, Settings
-from ...dependencies import get_vector_store, get_llm_provider, get_audio_speech_provider, get_source_service
+from ...dependencies import (
+    get_audio_speech_provider,
+    get_knowledge_repository,
+    get_llm_provider,
+    get_source_service,
+    get_vector_store,
+)
 from ...core.services.podcast_service import PodcastService
 from ...core.interfaces.vector_store import VectorStoreInterface
 from ...core.services.source_service import SourceService
+from ...core.interfaces.knowledge_repository import KnowledgeRepositoryInterface
+from ...domain.source import Artifact, ArtifactType, JobStatus
 
 router = APIRouter(prefix="/podcast", tags=["Podcast"])
+
+
+def get_podcast_llm_factory() -> Callable:
+    return get_llm_provider
 
 
 @router.post("/generate", response_model=PodcastGenerateResponse)
@@ -28,12 +42,14 @@ async def generate_podcast(
     settings: Settings = Depends(get_settings),
     vector_store: VectorStoreInterface = Depends(get_vector_store),
     source_service: SourceService = Depends(get_source_service),
+    repository: KnowledgeRepositoryInterface = Depends(get_knowledge_repository),
+    llm_factory: Callable = Depends(get_podcast_llm_factory),
     tts = Depends(get_audio_speech_provider),
 ):
     """生成播客（脚本 + 音频）"""
     try:
         # 获取 LLM 提供商
-        llm = get_llm_provider(
+        llm = llm_factory(
             provider=request.llm_provider,
             api_key=request.llm_api_key,
             base_url=request.llm_base_url,
@@ -80,14 +96,63 @@ async def generate_podcast(
         else:
             raise HTTPException(
                 status_code=400,
-                detail="请提供 source_text 或 document_ids"
+                detail="请提供 source_text、source_ids 或 document_ids"
             )
         
+        audio_url = f"/api/podcast/download/{result['audio_filename']}" if result.get("audio_filename") else None
+        transcript_url = f"/api/podcast/download/{result['transcript_filename']}"
+        script = result["script"]
+        turns = [{"speaker": turn.speaker, "text": turn.text} for turn in script.dialogues]
+        speakers = list(dict.fromkeys([script.host_name, script.guest_name]))
+        artifact = Artifact(
+            artifact_type=ArtifactType.PODCAST_SCRIPT,
+            title=getattr(script, "title", None) or "Podcast Script",
+            source_ids=request.source_ids or request.document_ids,
+            markdown=result["transcript"],
+            payload={
+                "title": getattr(script, "title", "Podcast Script"),
+                "speakers": speakers,
+                "turns": turns,
+                "estimated_duration_minutes": result["duration_minutes"],
+                "transcript": result["transcript"],
+                "duration_minutes": result["duration_minutes"],
+                "dialogue_count": result["dialogue_count"],
+                "audio_url": audio_url,
+                "audio_status": result.get("audio_status", {}),
+                "audio_filename": result.get("audio_filename"),
+                "transcript_url": transcript_url,
+                "transcript_filename": result.get("transcript_filename"),
+            },
+            file_refs=[
+                {
+                    "format": "markdown",
+                    "mime_type": "text/markdown",
+                    "name": result.get("transcript_filename"),
+                    "url": transcript_url,
+                }
+            ],
+            status=JobStatus.SUCCEEDED,
+        )
+        if audio_url:
+            artifact.file_refs.append(
+                {
+                    "format": "mp3",
+                    "mime_type": "audio/mpeg",
+                    "name": result.get("audio_filename"),
+                    "url": audio_url,
+                }
+            )
+        artifact = await repository.save_artifact(artifact)
+
         return PodcastGenerateResponse(
-            audio_url=f"/api/podcast/download/{result['audio_filename']}" if result.get("audio_filename") else None,
+            artifact_id=artifact.id,
+            title=artifact.title,
+            speakers=speakers,
+            turns=turns,
+            audio_url=audio_url,
             audio_status=result.get("audio_status", {}),
             audio_filename=result.get("audio_filename"),
-            transcript_url=f"/api/podcast/download/{result['transcript_filename']}",
+            transcript_url=transcript_url,
             transcript_filename=result.get("transcript_filename"),
             transcript=result["transcript"],
             duration_minutes=result["duration_minutes"],
@@ -103,10 +168,11 @@ async def generate_script_only(
     request: PodcastScriptRequest,
     vector_store: VectorStoreInterface = Depends(get_vector_store),
     source_service: SourceService = Depends(get_source_service),
+    llm_factory: Callable = Depends(get_podcast_llm_factory),
 ):
     """仅生成播客脚本（不合成音频）"""
     try:
-        llm = get_llm_provider(
+        llm = llm_factory(
             provider=request.llm_provider,
             api_key=request.llm_api_key,
             base_url=request.llm_base_url,
@@ -135,7 +201,7 @@ async def generate_script_only(
                 all_text.append(text)
             source_text = "\n\n---\n\n".join(all_text)
         else:
-            raise HTTPException(status_code=400, detail="请提供文本或文档")
+            raise HTTPException(status_code=400, detail="请提供 source_text、source_ids 或 document_ids")
         
         # 生成脚本
         script = await podcast_service.generate_script_only(

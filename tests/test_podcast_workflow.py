@@ -3,10 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from backend.api.routes.podcast import get_podcast_llm_factory, router as podcast_router
 from backend.core.services.podcast_service import PodcastService
 from backend.core.workflows.podcast_workflow import PodcastWorkflow
 from backend.domain.podcast import DialogueTurn, DurationRange, PodcastExtension, PodcastScript
+from backend.config import Settings
+from backend.dependencies import get_audio_speech_provider, get_source_service, get_vector_store
+from backend.infrastructure.repositories.memory_repository import InMemoryKnowledgeRepository
 
 
 class PodcastLLM:
@@ -87,6 +93,15 @@ class BrokenAudio:
         raise RuntimeError("tts failed")
 
 
+class FakeSourceService:
+    async def get_source_text(self, source_id: str) -> str:
+        return f"{source_id} source material for podcast."
+
+
+class EmptyVectorStore:
+    pass
+
+
 def test_duration_range_supports_thirty_minutes():
     assert DurationRange.from_minutes(30) == DurationRange.DEEP
     assert DurationRange.DEEP.max_minutes == 30
@@ -138,3 +153,45 @@ async def test_podcast_audio_success_and_failure_preserve_script(tmp_path):
     assert broken_result["audio_status"]["status"] == "failed"
     assert "tts failed" in broken_result["audio_status"]["error"]
     assert broken_result["transcript"].startswith("# Podcast")
+
+
+def test_podcast_api_persists_generated_script_as_artifact(tmp_path):
+    repo = InMemoryKnowledgeRepository()
+    settings = Settings(output_dir=str(tmp_path / "output"))
+
+    app = FastAPI()
+    app.include_router(podcast_router, prefix="/api")
+    app.dependency_overrides[get_vector_store] = lambda: EmptyVectorStore()
+    app.dependency_overrides[get_source_service] = lambda: FakeSourceService()
+    app.dependency_overrides[get_audio_speech_provider] = lambda: FakeAudio()
+    app.dependency_overrides[get_podcast_llm_factory] = lambda: (lambda **kwargs: PodcastLLM())
+
+    # Override by function object used in the route imports.
+    from backend.config import get_settings
+    from backend.dependencies import get_knowledge_repository
+
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_knowledge_repository] = lambda: repo
+
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/podcast/generate",
+        json={"source_ids": ["src-1"], "duration_range": "3-5"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["artifact_id"]
+    assert payload["title"] == "Podcast"
+    assert payload["speakers"] == ["主持人", "嘉宾"]
+    assert payload["turns"][0] == {"speaker": "主持人", "text": PodcastLLM().turn_text}
+    artifact = repo.artifacts[payload["artifact_id"]]
+    assert artifact.artifact_type.value == "podcast_script"
+    assert artifact.source_ids == ["src-1"]
+    assert artifact.payload["speakers"] == ["主持人", "嘉宾"]
+    assert artifact.payload["turns"][0] == {"speaker": "主持人", "text": PodcastLLM().turn_text}
+    assert artifact.payload["estimated_duration_minutes"] == payload["duration_minutes"]
+    assert artifact.payload["audio_url"] == payload["audio_url"]
+    assert artifact.payload["transcript_url"] == payload["transcript_url"]
+    assert artifact.markdown.startswith("# Podcast")

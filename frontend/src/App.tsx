@@ -130,9 +130,13 @@ export interface GeneratedContent {
     title: string;
     createdAt: Date;
     audioUrl?: string | null;
+    transcriptUrl?: string | null;
+    audioFilename?: string | null;
+    transcriptFilename?: string | null;
     transcript?: string;
     markdown?: string;
     payload?: Record<string, unknown>;
+    fileRefs?: Array<Record<string, unknown>>;
     downloadJsonUrl?: string;
     downloadMarkdownUrl?: string;
     downloadSvgUrl?: string;
@@ -322,6 +326,12 @@ function App() {
                 createdAt: new Date(artifact.created_at),
                 markdown: artifact.markdown,
                 payload: artifact.payload,
+                fileRefs: artifact.file_refs || [],
+                audioUrl: artifact.payload?.audio_url || null,
+                transcriptUrl: artifact.payload?.transcript_url || null,
+                audioFilename: artifact.payload?.audio_filename || null,
+                transcriptFilename: artifact.payload?.transcript_filename || null,
+                transcript: artifact.payload?.transcript,
                 downloadJsonUrl: `/api/artifacts/${artifact.id}/download?format=json`,
                 downloadMarkdownUrl: `/api/artifacts/${artifact.id}/download?format=markdown`,
                 downloadSvgUrl: artifact.artifact_type === 'infographic' ? `/api/artifacts/${artifact.id}/download?format=svg` : undefined

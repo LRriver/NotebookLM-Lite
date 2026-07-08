@@ -47,6 +47,13 @@ const artifactPayloads: Record<string, Record<string, unknown>> = {
         ],
         key_takeaways: ['优先使用 HTTPS', '证书链需要可信']
     },
+    faq: {
+        title: 'HTTPS FAQ',
+        items: [
+            { question: 'HTTPS 解决什么问题？', answer: '它通过 TLS 降低窃听、篡改和身份冒充风险。' },
+            { question: '证书为什么重要？', answer: '证书把服务器身份和公钥绑定起来。' }
+        ]
+    },
     data_table: {
         title: '协议对比表',
         columns: ['协议', '安全性', '用途'],
@@ -205,11 +212,22 @@ test('renders NotebookLM-like interactive Studio artifacts', async ({ page }) =>
     await expect(page.getByRole('heading', { name: '安全属性' })).toBeVisible();
     await expect(page.getByText('证书链需要可信')).toBeVisible();
 
+    await page.getByRole('button', { name: /^FAQ$/ }).click();
+    await page.getByRole('button', { name: '生成', exact: true }).click();
+    await page.getByRole('button', { name: /HTTPS FAQ/ }).click();
+    await expect(page.getByRole('button', { name: 'HTTPS 解决什么问题？' })).toBeVisible();
+    await expect(page.getByText('它通过 TLS 降低窃听、篡改和身份冒充风险。')).not.toBeVisible();
+    await page.getByRole('button', { name: 'HTTPS 解决什么问题？' }).click();
+    await expect(page.getByText('它通过 TLS 降低窃听、篡改和身份冒充风险。')).toBeVisible();
+
     await page.getByRole('button', { name: /表格/ }).click();
     await page.getByRole('button', { name: '生成', exact: true }).click();
     await page.getByRole('button', { name: /协议对比表/ }).click();
     await expect(page.getByRole('columnheader', { name: '协议' })).toBeVisible();
     await expect(page.getByRole('cell', { name: 'TLS 加密' })).toBeVisible();
+    const tableRegion = page.getByRole('region', { name: '协议对比表' });
+    await expect(tableRegion).toBeVisible();
+    await expect.poll(async () => tableRegion.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
 
     let developmentMessage = '';
     page.once('dialog', async dialog => {
