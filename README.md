@@ -12,6 +12,12 @@ NotebookLM-Lite is not affiliated with Google NotebookLM. The goal is to bring m
 
 The demo uses [doc/L9.md](doc/L9.md) as the sample source and shows model configuration, source upload, cited RAG chat, interactive Mind Map, Flashcards/Quiz, Data Table, Podcast, and the Video Overview placeholder. Model waiting time is shortened for README pacing.
 
+## Latest Update
+
+- **Native PPT / Slide Deck generation is now available in NotebookLM-Lite.** You can generate a deck from selected notebook sources, confirm the outline, confirm the per-slide prompt plan, generate slide images, regenerate or edit a single slide, and export the result as PPTX.
+- The current NotebookLM-Lite PPTX export is **image-based**: each slide in the exported PPTX is a full-page static image. This keeps the generation path reliable and easy to preview, but individual PowerPoint elements are not yet native editable shapes.
+- Fully editable PPT generation has already been implemented in [LRriver/AIPPT](https://github.com/LRriver/AIPPT). NotebookLM-Lite will integrate that editable PPT workflow next; you can try the complete editable-PPT generation experience today in [LRriver/AIPPT](https://github.com/LRriver/AIPPT).
+
 ## Why NotebookLM-Lite
 
 NotebookLM-style tools are becoming the default interface for working with long documents, research notes, study material, product manuals, papers, and course content. NotebookLM-Lite focuses on the same core loop:
@@ -180,6 +186,7 @@ NotebookLM-Lite already covers the core NotebookLM-style loop: sources, cited ch
 
 - Real Video Overview generation instead of the current placeholder card.
 - Stronger Deep Research workflows that can search, synthesize, and save research reports as sources.
+- Editable PPTX export, integrating the native-shape workflow already available in [LRriver/AIPPT](https://github.com/LRriver/AIPPT).
 - More export targets, including CSV/Sheets-style table export and richer artifact sharing.
 - More source types, such as URLs, audio, images, YouTube, and Google Drive-style integrations.
 
