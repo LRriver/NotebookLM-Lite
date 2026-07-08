@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { GeneratedContent } from '../App';
 import { MarkdownView } from './MarkdownView';
@@ -10,6 +10,41 @@ interface ArtifactViewerProps {
 }
 
 const textValue = (value: unknown) => value === undefined || value === null ? '' : String(value);
+
+const FAQViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = ({ payload, markdown }) => {
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const [openIndex, setOpenIndex] = useState<number | null>(null);
+    const answerIdPrefix = useId();
+
+    if (!items.length) {
+        return <MarkdownView content={markdown || ''} className="artifact-preview" />;
+    }
+
+    return (
+        <div className="faq-viewer">
+            {items.map((item: AnyRecord, index: number) => {
+                const expanded = openIndex === index;
+                const question = textValue(item.question);
+                const answerId = `${answerIdPrefix}-faq-answer-${index}`;
+                return (
+                    <div key={`${question}-${index}`} className={`faq-item ${expanded ? 'open' : ''}`}>
+                        <button
+                            className="faq-question"
+                            aria-label={question}
+                            aria-expanded={expanded}
+                            aria-controls={answerId}
+                            onClick={() => setOpenIndex(expanded ? null : index)}
+                        >
+                            <span>{question}</span>
+                            <small aria-hidden="true">{index + 1} / {items.length}</small>
+                        </button>
+                        {expanded && <p id={answerId} className="faq-answer">{textValue(item.answer)}</p>}
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
 
 const FlashcardsViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = ({ payload, markdown }) => {
     const cards = Array.isArray(payload.cards) ? payload.cards : [];
@@ -200,12 +235,14 @@ const ReportViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = ({ pay
 const DataTableViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = ({ payload, markdown }) => {
     const columns = Array.isArray(payload.columns) ? payload.columns : [];
     const rows = Array.isArray(payload.rows) ? payload.rows : [];
+    const title = textValue(payload.title || 'Data table');
     if (!columns.length) {
         return <MarkdownView content={markdown || ''} className="artifact-preview" />;
     }
     return (
-        <div className="data-table-viewer">
+        <div className="data-table-viewer data-table-scroll" role="region" aria-label="横向滚动查看完整表格" tabIndex={0}>
             <table>
+                <caption>{title}</caption>
                 <thead>
                     <tr>
                         {columns.map((column: unknown) => <th key={textValue(column)}>{textValue(column)}</th>)}
@@ -238,6 +275,9 @@ export const ArtifactViewer: React.FC<ArtifactViewerProps> = ({ content }) => {
     }
     if (content.type === 'flashcards' || content.type === 'quiz') {
         return <FlashcardsViewer payload={payload} markdown={content.markdown} />;
+    }
+    if (content.type === 'faq') {
+        return <FAQViewer payload={payload} markdown={content.markdown} />;
     }
     if (content.type === 'mind_map') {
         return <MindMapViewer payload={payload} markdown={content.markdown} />;

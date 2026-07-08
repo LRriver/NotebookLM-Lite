@@ -14,6 +14,7 @@ const source = {
 test('non-PPT workflow covers source upload, RAG chat, studio artifacts, and podcast script', async ({ page }) => {
     let sources: typeof source[] = [];
     let notes: Array<Record<string, unknown>> = [];
+    let artifacts: Array<Record<string, unknown>> = [];
     let artifactCount = 0;
 
     await page.route('**/api/config', route => route.fulfill({
@@ -74,6 +75,11 @@ test('non-PPT workflow covers source upload, RAG chat, studio artifacts, and pod
             body: JSON.stringify(notes[0])
         });
     });
+    await page.route('**/api/artifacts', route => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ artifacts, total: artifacts.length })
+    }));
     await page.route('**/api/artifacts/generate', async route => {
         const request = route.request();
         const payload = request.postDataJSON() as { artifact_type: string };
@@ -92,13 +98,62 @@ test('non-PPT workflow covers source upload, RAG chat, studio artifacts, and pod
             })
         });
     });
-    await page.route('**/api/podcast/generate', route => route.fulfill({
+    await page.route('**/api/podcast/generate', route => {
+        const podcastArtifact = {
+            id: 'podcast-artifact-1',
+            artifact_type: 'podcast_script',
+            title: '播客脚本',
+            source_ids: [source.id],
+            created_at: '2026-06-01T00:00:00Z',
+            updated_at: '2026-06-01T00:00:00Z',
+            status: 'succeeded',
+            markdown: '# 播客脚本\n\n1. 开场\n2. 深入讨论',
+            payload: {
+                title: '播客脚本',
+                speakers: ['主持人', '嘉宾'],
+                turns: [
+                    { speaker: '主持人', text: '开场' },
+                    { speaker: '嘉宾', text: '深入讨论' }
+                ],
+                estimated_duration_minutes: 20,
+                duration_minutes: 20,
+                dialogue_count: 2,
+                transcript: '# 播客脚本\n\n1. 开场\n2. 深入讨论',
+                audio_url: '/api/podcast/download/demo.mp3',
+                audio_filename: 'demo.mp3',
+                transcript_url: '/api/podcast/download/demo.md',
+                transcript_filename: 'demo.md',
+                audio_status: { status: 'succeeded' }
+            },
+            file_refs: [
+                { format: 'markdown', mime_type: 'text/markdown', name: 'demo.md', url: '/api/podcast/download/demo.md' },
+                { format: 'mp3', mime_type: 'audio/mpeg', name: 'demo.mp3', url: '/api/podcast/download/demo.mp3' }
+            ]
+        };
+        artifacts = [podcastArtifact, ...artifacts];
+        return route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+                artifact_id: podcastArtifact.id,
+                title: podcastArtifact.title,
+                speakers: podcastArtifact.payload.speakers,
+                turns: podcastArtifact.payload.turns,
+                transcript: podcastArtifact.payload.transcript,
+                audio_url: podcastArtifact.payload.audio_url,
+                audio_filename: podcastArtifact.payload.audio_filename,
+                transcript_url: podcastArtifact.payload.transcript_url,
+                transcript_filename: podcastArtifact.payload.transcript_filename,
+                audio_status: podcastArtifact.payload.audio_status,
+                duration_minutes: podcastArtifact.payload.duration_minutes,
+                dialogue_count: podcastArtifact.payload.dialogue_count
+            })
+        });
+    });
+    await page.route('**/api/podcast/download/*', route => route.fulfill({
         status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-            transcript: '# 播客脚本\n\n1. 开场\n2. 深入讨论',
-            audio_url: null
-        })
+        contentType: route.request().url().endsWith('.mp3') ? 'audio/mpeg' : 'text/markdown',
+        body: route.request().url().endsWith('.mp3') ? Buffer.from('mp3') : '# 播客脚本'
     }));
 
     await page.goto('/');
@@ -136,7 +191,15 @@ test('non-PPT workflow covers source upload, RAG chat, studio artifacts, and pod
     await page.getByRole('button', { name: '播客' }).click();
     await page.getByRole('button', { name: '20-30' }).click();
     await page.getByRole('button', { name: '生成播客' }).click();
-    await page.getByRole('button', { name: /播客脚本 podcast/ }).click();
+    await page.getByRole('button', { name: /播客脚本/ }).click();
     await expect(page.getByRole('heading', { name: '播客脚本' })).toBeVisible();
     await expect(page.getByRole('listitem').filter({ hasText: '深入讨论' })).toBeVisible();
+    await expect(page.getByRole('link', { name: /MP3/ })).toHaveAttribute('href', /demo\.mp3/);
+    await expect(page.getByRole('link', { name: /Transcript/ })).toHaveAttribute('href', /demo\.md/);
+
+    await page.reload();
+    await page.getByRole('button', { name: /播客脚本/ }).click();
+    await expect(page.getByRole('heading', { name: '播客脚本' })).toBeVisible();
+    await expect(page.getByRole('link', { name: /MP3/ })).toHaveAttribute('href', /demo\.mp3/);
+    await expect(page.getByRole('link', { name: /Transcript/ })).toHaveAttribute('href', /demo\.md/);
 });

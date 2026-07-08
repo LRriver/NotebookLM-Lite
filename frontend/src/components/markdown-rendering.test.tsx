@@ -219,6 +219,41 @@ describe('Markdown rendering', () => {
         expect(screen.getByText('得分 1 / 1')).toBeInTheDocument();
     });
 
+    test('renders FAQ artifacts as collapsible question and answer cards', () => {
+        renderZh(
+            <ArtifactViewer
+                content={{
+                    id: 'faq-1',
+                    type: 'faq',
+                    title: 'FAQ',
+                    createdAt: new Date(),
+                    markdown: '# FAQ\n\n### 理想 L9 的续航是多少？\n\nCLTC 纯电续航 420km。',
+                    payload: {
+                        title: 'FAQ',
+                        items: [
+                            {
+                                question: '理想 L9 的续航是多少？',
+                                answer: 'CLTC 纯电续航 420km。'
+                            },
+                            {
+                                question: '如何重启中控屏？',
+                                answer: '同时按下方向盘滚轮和相关按键。'
+                            }
+                        ]
+                    }
+                }}
+            />
+        );
+
+        expect(screen.getByRole('button', { name: '理想 L9 的续航是多少？' })).toBeInTheDocument();
+        expect(screen.queryByText('CLTC 纯电续航 420km。')).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: '理想 L9 的续航是多少？' }));
+
+        expect(screen.getByText('CLTC 纯电续航 420km。')).toBeInTheDocument();
+        expect(screen.getByText('1 / 2')).toBeInTheDocument();
+    });
+
     test('renders infographic SVG through an image URL instead of inline SVG markup', () => {
         const objectUrl = 'blob:infographic';
         const createObjectURL = vi.fn(() => objectUrl);
@@ -274,6 +309,84 @@ describe('Markdown rendering', () => {
         expect(screen.getByRole('heading', { name: 'Rendered Report' })).toBeInTheDocument();
         expect(screen.getByRole('cell', { name: 'HTTP' })).toBeInTheDocument();
         expect(screen.queryByText('## Rendered Report')).not.toBeInTheDocument();
+    });
+
+    test('renders restored podcast artifact audio and transcript download links', () => {
+        const contents: GeneratedContent[] = [
+            {
+                id: 'podcast-1',
+                type: 'podcast_script',
+                title: '播客脚本',
+                createdAt: new Date('2026-06-01T00:00:00Z'),
+                markdown: '# 播客脚本\n\n1. 开场\n2. 深入讨论',
+                transcript: '# 播客脚本\n\n1. 开场\n2. 深入讨论',
+                audioUrl: '/api/podcast/download/demo.mp3',
+                transcriptUrl: '/api/podcast/download/demo.md',
+                audioFilename: 'demo.mp3',
+                transcriptFilename: 'demo.md',
+                fileRefs: [
+                    { format: 'markdown', url: '/api/podcast/download/demo.md' },
+                    { format: 'mp3', url: '/api/podcast/download/demo.mp3' }
+                ],
+                payload: {
+                    title: '播客脚本',
+                    transcript: '# 播客脚本\n\n1. 开场\n2. 深入讨论',
+                    audio_url: '/api/podcast/download/demo.mp3',
+                    transcript_url: '/api/podcast/download/demo.md'
+                },
+                downloadMarkdownUrl: '/api/artifacts/podcast-1/download?format=markdown',
+                downloadJsonUrl: '/api/artifacts/podcast-1/download?format=json'
+            }
+        ];
+
+        renderZh(
+            <StudioPanel
+                sourceIds={['src-1']}
+                config={config}
+                contents={contents}
+                onContentGenerated={vi.fn()}
+                onOpenSlideDeck={vi.fn()}
+            />
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: '播客脚本 podcast_script' }));
+
+        expect(screen.getByRole('link', { name: /MP3/ })).toHaveAttribute('href', '/api/podcast/download/demo.mp3');
+        expect(screen.getByRole('link', { name: /Transcript/ })).toHaveAttribute('href', '/api/podcast/download/demo.md');
+        expect(screen.getByRole('link', { name: /Markdown/ })).toHaveAttribute('href', '/api/artifacts/podcast-1/download?format=markdown');
+    });
+
+    test('renders data table artifacts in an accessible horizontal scroll region', () => {
+        renderZh(
+            <ArtifactViewer
+                content={{
+                    id: 'table-1',
+                    type: 'data_table',
+                    title: '配置对比',
+                    createdAt: new Date(),
+                    payload: {
+                        title: '配置对比',
+                        columns: ['项目', 'L9 Ultra', 'L9 Livis', '说明'],
+                        rows: [
+                            {
+                                项目: '续航与电池',
+                                'L9 Ultra': '72.7kWh 5C 电池，CLTC 纯电 420km，综合 1650km',
+                                'L9 Livis': '72.7kWh 电池，CLTC 纯电 420km，综合 1650km',
+                                说明: '长文本需要在右侧窄栏中可横向滚动查看'
+                            }
+                        ]
+                    }
+                }}
+            />
+        );
+
+        const scrollRegion = screen.getByLabelText('横向滚动查看完整表格');
+
+        expect(scrollRegion).toHaveAttribute('role', 'region');
+        expect(scrollRegion).toHaveAttribute('tabindex', '0');
+        expect(scrollRegion).toHaveClass('data-table-scroll');
+        expect(within(scrollRegion).getByText('配置对比')).toBeInTheDocument();
+        expect(within(scrollRegion).getByRole('columnheader', { name: 'L9 Livis' })).toBeInTheDocument();
     });
 
     test('renders ordered lists as list items', () => {

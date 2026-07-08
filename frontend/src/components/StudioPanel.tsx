@@ -74,13 +74,43 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, con
                 if (!response.ok) throw new Error(await response.text());
                 const data = await response.json();
                 onContentGenerated({
-                    id: crypto.randomUUID(),
-                    type: 'podcast',
-                    title: lang === 'zh' ? '播客脚本' : 'Podcast Script',
+                    id: data.artifact_id || crypto.randomUUID(),
+                    type: 'podcast_script',
+                    title: data.title || (lang === 'zh' ? '播客脚本' : 'Podcast Script'),
                     createdAt: new Date(),
                     audioUrl: data.audio_url,
+                    transcriptUrl: data.transcript_url,
+                    audioFilename: data.audio_filename,
+                    transcriptFilename: data.transcript_filename,
                     transcript: data.transcript,
-                    markdown: data.transcript
+                    payload: {
+                        title: data.title || (lang === 'zh' ? '播客脚本' : 'Podcast Script'),
+                        speakers: data.speakers || [],
+                        turns: data.turns || [],
+                        estimated_duration_minutes: data.duration_minutes,
+                        transcript: data.transcript,
+                        audio_url: data.audio_url,
+                        audio_status: data.audio_status,
+                        duration_minutes: data.duration_minutes,
+                        dialogue_count: data.dialogue_count
+                    },
+                    fileRefs: [
+                        data.transcript_url ? {
+                            format: 'markdown',
+                            mime_type: 'text/markdown',
+                            name: data.transcript_filename,
+                            url: data.transcript_url
+                        } : null,
+                        data.audio_url ? {
+                            format: 'mp3',
+                            mime_type: 'audio/mpeg',
+                            name: data.audio_filename,
+                            url: data.audio_url
+                        } : null
+                    ].filter(Boolean) as Array<Record<string, unknown>>,
+                    markdown: data.transcript,
+                    downloadJsonUrl: data.artifact_id ? `/api/artifacts/${data.artifact_id}/download?format=json` : undefined,
+                    downloadMarkdownUrl: data.artifact_id ? `/api/artifacts/${data.artifact_id}/download?format=markdown` : undefined
                 });
             } else {
                 const response = await fetch('/api/artifacts/generate', {
@@ -239,11 +269,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, con
                             <div className="artifact-body">
                                 {content.audioUrl && <audio controls src={content.audioUrl} className="w-full mb-3" />}
                                 <ArtifactViewer content={content} />
-                                <div className="flex gap-2 mt-3">
+                                <div className="flex flex-wrap gap-2 mt-3">
                                     {content.downloadMarkdownUrl && <a className="secondary-btn" href={content.downloadMarkdownUrl}><Download size={14} /> Markdown</a>}
                                     {content.downloadJsonUrl && <a className="secondary-btn" href={content.downloadJsonUrl}><Download size={14} /> JSON</a>}
                                     {content.downloadSvgUrl && <a className="secondary-btn" href={content.downloadSvgUrl}><Download size={14} /> SVG</a>}
                                     {content.audioUrl && <a className="secondary-btn" href={content.audioUrl}><Download size={14} /> MP3</a>}
+                                    {content.transcriptUrl && <a className="secondary-btn" href={content.transcriptUrl}><Download size={14} /> Transcript</a>}
                                 </div>
                             </div>
                         )}

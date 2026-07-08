@@ -79,6 +79,13 @@ class PodcastScriptArtifactPayload(BaseModel):
     turns: list[dict[str, str]]
     estimated_duration_minutes: float
     transcript: str
+    duration_minutes: float | None = None
+    dialogue_count: int | None = None
+    audio_url: str | None = None
+    audio_status: dict[str, Any] = Field(default_factory=dict)
+    audio_filename: str | None = None
+    transcript_url: str | None = None
+    transcript_filename: str | None = None
 
 
 class PPTOutlineArtifactPayload(BaseModel):
