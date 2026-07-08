@@ -4,7 +4,7 @@ Dependency Injection Container
 Factory methods for creating service instances with proper abstraction.
 Enables easy testing and swapping of implementations.
 """
-from typing import Optional
+from typing import Any, Optional
 from functools import lru_cache
 
 from .config import ModelProfile, Settings, get_settings
@@ -20,12 +20,14 @@ class DependencyContainer:
     
     _vector_store: Optional[VectorStoreInterface] = None
     _knowledge_repository: Optional[KnowledgeRepositoryInterface] = None
+    _slide_deck_service: Optional[Any] = None
 
     @classmethod
     def reset_runtime_caches(cls) -> None:
         """Drop cached services that depend on model settings."""
 
         cls._vector_store = None
+        cls._slide_deck_service = None
     
     @classmethod
     def get_vector_store(
@@ -114,6 +116,25 @@ class DependencyContainer:
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
+
+    @classmethod
+    def get_slide_deck_service(cls, settings: Optional[Settings] = None, force_new: bool = False):
+        if cls._slide_deck_service is None or force_new:
+            from .core.services.slide_deck_planning_service import SlideDeckPlanningService
+            from .core.services.slide_deck_service import SlideDeckService
+            from .infrastructure.image_providers.raw_multimodal_provider import RawMultimodalImageProvider
+            from .infrastructure.llm_providers.litellm_provider import LiteLLMProvider
+            from .infrastructure.slide_deck_files import SlideDeckFileStore
+
+            settings = settings or get_settings()
+            cls._slide_deck_service = SlideDeckService(
+                repository=cls.get_knowledge_repository(settings=settings),
+                planning_service=SlideDeckPlanningService(LiteLLMProvider(profile=settings.api.models.text_model)),
+                image_provider=RawMultimodalImageProvider(settings.api.models.image_model),
+                edit_provider=RawMultimodalImageProvider(settings.api.models.edit_model),
+                file_store=SlideDeckFileStore(settings.output_dir),
+            )
+        return cls._slide_deck_service
 
     @staticmethod
     def _map_litellm_profile(
@@ -257,6 +278,11 @@ def get_knowledge_repository() -> KnowledgeRepositoryInterface:
 def get_source_service():
     """获取 source service（FastAPI 依赖注入用）"""
     return DependencyContainer.get_source_service()
+
+
+def get_slide_deck_service():
+    """获取 slide deck service（FastAPI 依赖注入用）"""
+    return DependencyContainer.get_slide_deck_service()
 
 
 def get_embedding_provider():

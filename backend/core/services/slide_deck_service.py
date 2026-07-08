@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import json
+import logging
+import struct
 from typing import Any
+from urllib.parse import urlparse
 
 from ...domain.slide_deck import (
     SlideAsset,
@@ -29,6 +34,8 @@ from ...infrastructure.slide_deck_files import SlideDeckFileStore
 from ..interfaces.knowledge_repository import KnowledgeRepositoryInterface
 from .slide_deck_export_service import SlideDeckPPTXExporter
 
+logger = logging.getLogger(__name__)
+
 
 class SlideDeckService:
     def __init__(
@@ -45,6 +52,7 @@ class SlideDeckService:
         self.edit_provider = edit_provider
         self.file_store = file_store
         self.pptx_exporter = SlideDeckPPTXExporter()
+        self._background_tasks: dict[str, asyncio.Task] = {}
 
     async def create_deck(
         self,
@@ -65,32 +73,60 @@ class SlideDeckService:
                     "source_id": source.id,
                     "title": source.title,
                     "filename": source.filename,
+                    "mime_type": source.mime_type,
+                    "char_count": len(source.text),
+                    "content_sha256": hashlib.sha256(source.text.encode("utf-8")).hexdigest(),
+                    "created_at": source.created_at,
+                    "updated_at": source.updated_at,
                     "excerpt": source.text[:800],
                 }
             )
             context_parts.append(f"## {source.title}\n\n{source.text[:6000]}")
         safe_config = self._sanitize_config(config)
+        model_lineage = {
+            "text_model": self._provider_model_metadata(getattr(self.planning, "llm", None), "text_model"),
+            "image_model": self._provider_model_metadata(self.image_provider, "image_model"),
+            "edit_model": self._provider_model_metadata(self.edit_provider, "edit_model"),
+        }
+        source_context = "\n\n---\n\n".join(context_parts)
         deck = SlideDeckProject(
             title=title,
             source_ids=source_ids,
             source_snapshot=snapshot,
-            config_snapshot={**safe_config, "source_context": "\n\n---\n\n".join(context_parts)},
+            config_snapshot={
+                **safe_config,
+                "source_context": source_context,
+                "source_context_sha256": hashlib.sha256(source_context.encode("utf-8")).hexdigest(),
+                "model_lineage": model_lineage,
+            },
         )
         await self.repository.save_slide_deck(deck)
         await self._upsert_deck_artifact(deck)
         return deck
 
     async def list_decks(self) -> list[SlideDeckProject]:
-        return await self.repository.list_slide_decks()
+        decks = await self.repository.list_slide_decks()
+        return [await self._reconcile_interrupted_slide_generation(deck) for deck in decks]
 
     async def get_deck(self, deck_id: str) -> SlideDeckProject | None:
-        return await self.repository.get_slide_deck(deck_id)
+        deck = await self.repository.get_slide_deck(deck_id)
+        if not deck:
+            return None
+        return await self._reconcile_interrupted_slide_generation(deck)
 
     async def get_job(self, job_id: str) -> SlideDeckJob | None:
-        return await self.repository.get_slide_deck_job(job_id)
+        job = await self.repository.get_slide_deck_job(job_id)
+        if not job:
+            return None
+        deck = await self.repository.get_slide_deck(job.deck_id)
+        if deck:
+            await self._reconcile_interrupted_slide_generation(deck)
+            job = await self.repository.get_slide_deck_job(job_id)
+        return job
 
     async def list_jobs(self, deck_id: str) -> list[SlideDeckJob]:
-        await self._require_deck(deck_id)
+        deck = await self._require_deck(deck_id)
+        await self._reconcile_interrupted_slide_generation(deck)
         return await self.repository.list_slide_deck_jobs(deck_id)
 
     async def generate_outline(self, deck_id: str) -> SlideDeckJob:
@@ -135,6 +171,14 @@ class SlideDeckService:
         confirmed: bool,
     ) -> SlideDeckProject:
         deck = await self._require_deck(deck_id)
+        if deck.stage not in {
+            SlideDeckStage.CREATED,
+            SlideDeckStage.OUTLINE_READY,
+            SlideDeckStage.OUTLINE_CONFIRMED,
+        }:
+            raise ValueError("outline cannot be changed after prompt planning starts")
+        if confirmed:
+            self._validate_page_sequence([slide.page for slide in outline.slides], deck.config_snapshot)
         deck.outline = outline
         if confirmed and deck.stage in {
             SlideDeckStage.CREATED,
@@ -182,6 +226,14 @@ class SlideDeckService:
         confirmed: bool,
     ) -> SlideDeckProject:
         deck = await self._require_deck(deck_id)
+        if deck.stage not in {
+            SlideDeckStage.OUTLINE_CONFIRMED,
+            SlideDeckStage.PROMPT_PLAN_READY,
+            SlideDeckStage.PROMPT_PLAN_CONFIRMED,
+        }:
+            raise ValueError("prompt plan cannot be changed after slide generation starts")
+        if confirmed:
+            self._validate_page_sequence([slide.page for slide in prompt_plan.slide_prompts], deck.config_snapshot)
         deck.prompt_plan = prompt_plan
         if confirmed and deck.stage in {
             SlideDeckStage.OUTLINE_CONFIRMED,
@@ -220,14 +272,77 @@ class SlideDeckService:
         deck.slides = self._sync_slides_from_prompt_plan(deck)
         deck.updated_at = utc_now()
         await self.repository.save_slide_deck(deck)
-        asyncio.create_task(self._run_slide_generation_job(deck.id, job.id))
+        self._track_background_task(job.id, self._run_slide_generation_job(deck.id, job.id))
         return job
+
+    def _track_background_task(self, job_id: str, coroutine) -> None:
+        task = asyncio.create_task(coroutine)
+        self._background_tasks[job_id] = task
+
+        def cleanup(completed: asyncio.Task) -> None:
+            self._background_tasks.pop(job_id, None)
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                logger.info("Slide generation background task was cancelled for job %s", job_id)
+            except Exception as exc:
+                logger.exception("Slide generation background task crashed for job %s: %s", job_id, exc)
+
+        task.add_done_callback(cleanup)
+
+    async def _reconcile_interrupted_slide_generation(self, deck: SlideDeckProject) -> SlideDeckProject:
+        if deck.stage != SlideDeckStage.SLIDES_GENERATING or deck.status != SlideDeckStatus.GENERATING:
+            return deck
+
+        jobs = [
+            job
+            for job in await self.repository.list_slide_deck_jobs(deck.id)
+            if job.stage == SlideDeckJobStage.SLIDE_GENERATION and job.status in {JobStatus.PENDING, JobStatus.RUNNING}
+        ]
+        if jobs and any(
+            (task := self._background_tasks.get(job.id)) is not None and not task.done()
+            for job in jobs
+        ):
+            return deck
+
+        error = "Slide generation was interrupted before completion. Retry generation to continue."
+        for job in jobs:
+            job.status = JobStatus.FAILED
+            job.error = error
+            job.finished_at = utc_now()
+            await self.repository.save_slide_deck_job(job)
+
+        for slide in deck.slides:
+            if slide.status in {SlideStatus.PENDING, SlideStatus.GENERATING}:
+                slide.status = SlideStatus.FAILED
+                slide.error = error
+                slide.updated_at = utc_now()
+        deck.status = SlideDeckStatus.FAILED
+        deck.error = error
+        deck.updated_at = utc_now()
+        await self.repository.save_slide_deck(deck)
+        await self._upsert_deck_artifact(deck)
+        return deck
 
     def _validate_slide_generation_ready(self, deck: SlideDeckProject) -> None:
         can_start = deck.stage == SlideDeckStage.PROMPT_PLAN_CONFIRMED
         can_resume = deck.stage == SlideDeckStage.SLIDES_GENERATING and deck.status == SlideDeckStatus.FAILED
         if not deck.prompt_plan or not (can_start or can_resume):
             raise ValueError("confirmed prompt plan is required")
+        self._validate_page_sequence([slide.page for slide in deck.prompt_plan.slide_prompts], deck.config_snapshot)
+
+    @classmethod
+    def _validate_page_sequence(cls, pages: list[int], config: dict[str, Any]) -> None:
+        expected = list(range(1, cls._page_count(config) + 1))
+        if pages != expected:
+            raise ValueError(f"page sequence must be {expected}, got {pages}")
+
+    @staticmethod
+    def _page_count(config: dict[str, Any]) -> int:
+        page_count = int(config.get("page_count") or config.get("num_pages") or 0)
+        if page_count < 1:
+            raise ValueError("page_count must be at least 1")
+        return page_count
 
     async def _run_slide_generation_job(self, deck_id: str, job_id: str) -> SlideDeckJob:
         deck = await self._require_deck(deck_id)
@@ -260,7 +375,14 @@ class SlideDeckService:
                     aspect_ratio=str(deck.config_snapshot.get("aspect_ratio", "16:9")),
                     quality=str(deck.config_snapshot.get("quality", "2K")),
                 )
-                asset = await self._store_image_asset(deck.id, slide.id, image.base64_data, SlideAssetStage.GENERATED)
+                asset = await self._store_image_asset(
+                    deck.id,
+                    slide.id,
+                    image.base64_data,
+                    SlideAssetStage.GENERATED,
+                    image.mime_type,
+                    self._provider_model_metadata(self.image_provider, "image_model"),
+                )
                 slide.asset_id = asset.id
                 slide.status = SlideStatus.SUCCEEDED
             except Exception as exc:
@@ -300,7 +422,14 @@ class SlideDeckService:
             aspect_ratio=str(deck.config_snapshot.get("aspect_ratio", "16:9")),
             quality=str(deck.config_snapshot.get("quality", "2K")),
         )
-        asset = await self._store_image_asset(deck.id, slide.id, image.base64_data, SlideAssetStage.GENERATED)
+        asset = await self._store_image_asset(
+            deck.id,
+            slide.id,
+            image.base64_data,
+            SlideAssetStage.GENERATED,
+            image.mime_type,
+            self._provider_model_metadata(self.image_provider, "image_model"),
+        )
         slide.asset_id = asset.id
         slide.status = SlideStatus.SUCCEEDED
         slide.error = None
@@ -315,28 +444,38 @@ class SlideDeckService:
         deck = await self._require_deck(deck_id)
         slide = self._slide(deck, slide_id)
         previous_asset_id = slide.asset_id
-        image_b64 = ""
-        if previous_asset_id:
-            asset = await self.repository.get_slide_asset(previous_asset_id)
-            if asset:
-                with open(asset.file_path, "rb") as file:
-                    image_b64 = base64.b64encode(file.read()).decode()
+        if not previous_asset_id:
+            raise ValueError("slide image is required before editing")
+        asset = await self.repository.get_slide_asset(previous_asset_id)
+        if not asset:
+            raise ValueError("slide image is required before editing")
+        with open(asset.file_path, "rb") as file:
+            image_b64 = base64.b64encode(file.read()).decode()
         edited = await self.edit_provider.edit_image(
             image_b64,
             instruction,
             aspect_ratio=str(deck.config_snapshot.get("aspect_ratio", "16:9")),
             quality=str(deck.config_snapshot.get("quality", "2K")),
         )
-        asset = await self._store_image_asset(deck.id, slide.id, edited.base64_data, SlideAssetStage.EDITED)
+        asset = await self._store_image_asset(
+            deck.id,
+            slide.id,
+            edited.base64_data,
+            SlideAssetStage.EDITED,
+            edited.mime_type,
+            self._provider_model_metadata(self.edit_provider, "edit_model"),
+        )
         slide.edit_history.append(
             SlideEditHistory(
                 instruction=instruction,
                 previous_asset_id=previous_asset_id,
                 next_asset_id=asset.id,
+                model_metadata=self._provider_model_metadata(self.edit_provider, "edit_model"),
             )
         )
         slide.asset_id = asset.id
         slide.updated_at = utc_now()
+        self._refresh_deck_generation_status(deck)
         deck.updated_at = utc_now()
         await self.repository.save_slide_deck(deck)
         await self._upsert_deck_artifact(deck)
@@ -378,7 +517,9 @@ class SlideDeckService:
             export.checksum = stored.checksum
             export.download_ref = stored.download_ref
             export.slide_count = len(image_paths)
+            export.slide_asset_signature = await self._current_slide_asset_signature(deck)
             export.status = SlideExportStatus.SUCCEEDED
+            export.model_metadata = deck.config_snapshot.get("model_lineage", {})
             export.error = None
             export.updated_at = utc_now()
             await self.repository.save_slide_export(export)
@@ -401,12 +542,20 @@ class SlideDeckService:
         return job
 
     async def get_latest_export(self, deck_id: str, format: SlideExportFormat = SlideExportFormat.PPTX) -> SlideDeckExport | None:
-        await self._require_deck(deck_id)
+        deck = await self._require_deck(deck_id)
+        try:
+            current_signature = await self._current_slide_asset_signature(deck)
+        except ValueError:
+            return None
         exports = await self.repository.list_slide_exports(deck_id)
         matching = [
             export
             for export in exports
-            if export.format == format and export.status == SlideExportStatus.SUCCEEDED
+            if (
+                export.format == format
+                and export.status == SlideExportStatus.SUCCEEDED
+                and export.slide_asset_signature == current_signature
+            )
         ]
         if not matching:
             return None
@@ -428,25 +577,95 @@ class SlideDeckService:
         slide_id: str,
         image_base64: str,
         stage: SlideAssetStage,
+        mime_type: str = "image/png",
+        model_metadata: dict[str, Any] | None = None,
     ) -> SlideAsset:
         content = base64.b64decode(image_base64)
+        width, height = self._image_dimensions(content)
         stored = self.file_store.save_file(
             deck_id=deck_id,
             kind=SlideDeckFileKind.SLIDE_IMAGE,
-            filename=f"{slide_id}-{new_id('assetfile')}.png",
+            filename=f"{slide_id}-{new_id('assetfile')}{self._image_extension(mime_type)}",
             content=content,
         )
         asset = SlideAsset(
             deck_id=deck_id,
             slide_id=slide_id,
             file_path=str(stored.path),
-            mime_type="image/png",
+            mime_type=mime_type,
             byte_size=stored.byte_size,
             checksum=stored.checksum,
             download_ref=stored.download_ref,
+            width=width,
+            height=height,
             stage=stage,
+            model_metadata=model_metadata or {},
         )
         return await self.repository.save_slide_asset(asset)
+
+    @staticmethod
+    def _provider_model_metadata(provider: Any, role: str) -> dict[str, Any]:
+        profile = getattr(provider, "profile", None)
+        if not profile:
+            return {"role": role}
+        host = ""
+        if getattr(profile, "base_url", ""):
+            host = urlparse(profile.base_url).netloc
+        return {
+            "role": role,
+            "model": getattr(profile, "model", ""),
+            "adapter": getattr(profile, "adapter", ""),
+            "base_url_host": host,
+            "api_key_set": bool(getattr(profile, "api_key", "")),
+        }
+
+    @staticmethod
+    def _image_extension(mime_type: str) -> str:
+        return {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+        }.get(mime_type, ".png")
+
+    @staticmethod
+    def _image_dimensions(content: bytes) -> tuple[int | None, int | None]:
+        if content.startswith(b"\x89PNG\r\n\x1a\n") and len(content) >= 24:
+            return struct.unpack(">II", content[16:24])
+        if (content.startswith(b"GIF87a") or content.startswith(b"GIF89a")) and len(content) >= 10:
+            return struct.unpack("<HH", content[6:10])
+        if content.startswith(b"RIFF") and len(content) >= 30 and content[8:12] == b"WEBP":
+            if content[12:16] == b"VP8X" and len(content) >= 30:
+                width = int.from_bytes(content[24:27], "little") + 1
+                height = int.from_bytes(content[27:30], "little") + 1
+                return width, height
+            return None, None
+        if content.startswith(b"\xff\xd8\xff"):
+            return SlideDeckService._jpeg_dimensions(content)
+        return None, None
+
+    @staticmethod
+    def _jpeg_dimensions(content: bytes) -> tuple[int | None, int | None]:
+        index = 2
+        while index + 9 < len(content):
+            if content[index] != 0xFF:
+                index += 1
+                continue
+            marker = content[index + 1]
+            index += 2
+            if marker in {0xD8, 0xD9}:
+                continue
+            if index + 2 > len(content):
+                break
+            segment_length = int.from_bytes(content[index : index + 2], "big")
+            if segment_length < 2 or index + segment_length > len(content):
+                break
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                height = int.from_bytes(content[index + 3 : index + 5], "big")
+                width = int.from_bytes(content[index + 5 : index + 7], "big")
+                return width, height
+            index += segment_length
+        return None, None
 
     async def _exportable_slide_image_paths(self, deck: SlideDeckProject) -> list[str]:
         if deck.status != SlideDeckStatus.READY and deck.stage != SlideDeckStage.EXPORTED:
@@ -462,6 +681,27 @@ class SlideDeckService:
                 raise ValueError("generated slide images are required before PPTX export")
             image_paths.append(asset.file_path)
         return image_paths
+
+    async def _current_slide_asset_signature(self, deck: SlideDeckProject) -> str:
+        if not deck.slides:
+            raise ValueError("generated slide images are required before PPTX export")
+        parts: list[dict[str, Any]] = []
+        for slide in sorted(deck.slides, key=lambda item: item.page_number):
+            if slide.status != SlideStatus.SUCCEEDED or not slide.asset_id:
+                raise ValueError("generated slide images are required before PPTX export")
+            asset = await self.repository.get_slide_asset(slide.asset_id)
+            if not asset or not asset.file_path:
+                raise ValueError("generated slide images are required before PPTX export")
+            parts.append(
+                {
+                    "page_number": slide.page_number,
+                    "slide_id": slide.id,
+                    "asset_id": asset.id,
+                    "checksum": asset.checksum,
+                }
+            )
+        serialized = json.dumps(parts, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     async def _upsert_deck_artifact(self, deck: SlideDeckProject) -> None:
         artifact = Artifact(

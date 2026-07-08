@@ -17,6 +17,13 @@ from backend.infrastructure.image_providers.raw_multimodal_provider import (
     RequestsJsonClient,
 )
 
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lrW3MgAAAABJRU5ErkJggg=="
+)
+JPEG_BYTES = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAEFAqf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/ASP/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/ASP/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAY/Al//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/IV//2gAMAwEAAgADAAAAEP/EFBQRAQAAAAAAAAAAAAAAAAAAARD/2gAIAQMBAT8QH//EFBQRAQAAAAAAAAAAAAAAAAAAARD/2gAIAQIBAT8QH//EFBABAQAAAAAAAAAAAAAAAAAAARD/2gAIAQEAAT8QH//Z"
+)
+
 
 class FakeStructuredLLM:
     def __init__(self) -> None:
@@ -45,6 +52,7 @@ class FakeImageHttpClient:
         self.payload = payload
         self.calls = []
         self.downloads = []
+        self.download_bytes = PNG_BYTES
 
     async def post_json(self, url, headers, json_payload, timeout):
         self.calls.append((url, headers, json_payload, timeout))
@@ -52,7 +60,7 @@ class FakeImageHttpClient:
 
     async def get_bytes(self, url, timeout):
         self.downloads.append((url, timeout))
-        return b"downloaded-image"
+        return self.download_bytes
 
 
 @pytest.mark.asyncio
@@ -91,12 +99,17 @@ async def test_slide_deck_planning_uses_litellm_structured_models():
 
     outline = await service.generate_outline(
         source_context="TLS protects HTTP traffic.",
-        config={"page_count": 1, "language": "English", "style": "technical"},
+        config={
+            "page_count": 1,
+            "language": "English",
+            "style": "technical",
+            "source_context": "TLS protects HTTP traffic.",
+        },
     )
     prompt_plan = await service.generate_prompt_plan(
         source_context="TLS protects HTTP traffic.",
         outline=outline,
-        config={"page_count": 1},
+        config={"page_count": 1, "source_context": "TLS protects HTTP traffic."},
     )
 
     assert isinstance(outline, SlideDeckOutline)
@@ -104,6 +117,8 @@ async def test_slide_deck_planning_uses_litellm_structured_models():
     assert llm.calls[0]["response_model"] is SlideDeckOutline
     assert llm.calls[1]["response_model"] is SlidePromptPlanSet
     assert "TLS protects HTTP traffic" in llm.calls[0]["prompt"]
+    assert "source_context" not in llm.calls[0]["prompt"]
+    assert "source_context" not in llm.calls[1]["prompt"]
 
 
 @pytest.mark.asyncio
@@ -249,7 +264,7 @@ async def test_slide_deck_planning_repairs_prompt_plan_page_sequence_once():
 
 @pytest.mark.asyncio
 async def test_raw_multimodal_image_provider_builds_generation_payload():
-    image_b64 = base64.b64encode(b"image-bytes").decode()
+    image_b64 = base64.b64encode(PNG_BYTES).decode()
     http = FakeImageHttpClient({"choices": [{"message": {"content": image_b64}}]})
     provider = RawMultimodalImageProvider(
         ModelProfile(
@@ -288,7 +303,7 @@ async def test_raw_multimodal_image_provider_supports_openai_image_generations_a
 
     result = await provider.generate_image("Create slide", aspect_ratio="16:9", quality="2K")
 
-    assert result.base64_data == base64.b64encode(b"downloaded-image").decode()
+    assert result.base64_data == base64.b64encode(PNG_BYTES).decode()
     url, headers, payload, timeout = http.calls[0]
     assert url == "https://image.example/v1/images/generations"
     assert headers["Authorization"] == "Bearer image-key"
@@ -314,7 +329,7 @@ async def test_raw_multimodal_image_provider_supports_siliconflow_image_generati
 
     result = await provider.generate_image("Create slide", aspect_ratio="16:9", quality="2K")
 
-    assert result.base64_data == base64.b64encode(b"downloaded-image").decode()
+    assert result.base64_data == base64.b64encode(PNG_BYTES).decode()
     url, _headers, payload, _timeout = http.calls[0]
     assert url == "https://api.siliconflow.cn/v1/images/generations"
     assert payload["model"] == "Qwen/Qwen-Image"
@@ -353,8 +368,8 @@ async def test_generated_image_url_download_rejects_non_image_content(monkeypatc
 
 @pytest.mark.asyncio
 async def test_raw_multimodal_image_provider_builds_edit_payload():
-    edited_b64 = base64.b64encode(b"edited-image").decode()
-    source_b64 = base64.b64encode(b"source-image").decode()
+    edited_b64 = base64.b64encode(PNG_BYTES).decode()
+    source_b64 = base64.b64encode(PNG_BYTES).decode()
     http = FakeImageHttpClient({"choices": [{"message": {"content": edited_b64}}]})
     provider = RawMultimodalImageProvider(
         ModelProfile(
@@ -376,8 +391,28 @@ async def test_raw_multimodal_image_provider_builds_edit_payload():
 
 
 @pytest.mark.asyncio
+async def test_raw_multimodal_image_provider_edit_downloads_url_response_with_safe_http_client():
+    source_b64 = base64.b64encode(PNG_BYTES).decode()
+    http = FakeImageHttpClient({"choices": [{"message": {"content": "![edited](https://cdn.example/edited.png)"}}]})
+    provider = RawMultimodalImageProvider(
+        ModelProfile(
+            model="gpt-image-2",
+            base_url="https://image.example/v1",
+            api_key="edit-key",
+            adapter="raw_chat_multimodal",
+        ),
+        http_client=http,
+    )
+
+    result = await provider.edit_image(source_b64, "Make title shorter")
+
+    assert result.base64_data == base64.b64encode(PNG_BYTES).decode()
+    assert http.downloads == [("https://cdn.example/edited.png", 180)]
+
+
+@pytest.mark.asyncio
 async def test_raw_multimodal_image_provider_rejects_generation_only_adapter_for_edit():
-    source_b64 = base64.b64encode(b"source-image").decode()
+    source_b64 = base64.b64encode(PNG_BYTES).decode()
     http = FakeImageHttpClient({"images": [{"url": "https://cdn.example/edited.png"}]})
     provider = RawMultimodalImageProvider(
         ModelProfile(
@@ -406,17 +441,17 @@ async def test_raw_multimodal_image_provider_normalizes_markdown_url_response():
             adapter="raw_chat_multimodal",
         ),
         http_client=http,
-        image_fetcher=lambda url: b"url-image-bytes",
+        image_fetcher=lambda url: PNG_BYTES,
     )
 
     result = await provider.generate_image("Create slide")
 
-    assert result.base64_data == base64.b64encode(b"url-image-bytes").decode()
+    assert result.base64_data == base64.b64encode(PNG_BYTES).decode()
     assert result.mime_type == "image/png"
 
 
 @pytest.mark.asyncio
-async def test_raw_multimodal_image_provider_rejects_url_without_safe_fetcher():
+async def test_raw_multimodal_image_provider_downloads_generation_url_with_safe_http_client():
     http = FakeImageHttpClient({"choices": [{"message": {"content": "![slide](https://cdn.example/slide.png)"}}]})
     provider = RawMultimodalImageProvider(
         ModelProfile(
@@ -428,13 +463,53 @@ async def test_raw_multimodal_image_provider_rejects_url_without_safe_fetcher():
         http_client=http,
     )
 
-    with pytest.raises(ValueError, match="safe image_fetcher"):
+    result = await provider.generate_image("Create slide")
+
+    assert result.base64_data == base64.b64encode(PNG_BYTES).decode()
+    assert http.downloads == [("https://cdn.example/slide.png", 180)]
+
+
+@pytest.mark.asyncio
+async def test_raw_multimodal_image_provider_preserves_downloaded_url_mime_type():
+    http = FakeImageHttpClient({"choices": [{"message": {"content": "https://cdn.example/slide.jpg"}}]})
+    http.download_bytes = JPEG_BYTES
+    provider = RawMultimodalImageProvider(
+        ModelProfile(
+            model="gpt-image-2",
+            base_url="https://image.example/v1",
+            api_key="image-key",
+            adapter="raw_chat_multimodal",
+        ),
+        http_client=http,
+    )
+
+    result = await provider.generate_image("Create slide")
+
+    assert result.base64_data == base64.b64encode(JPEG_BYTES).decode()
+    assert result.mime_type == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_raw_multimodal_image_provider_rejects_non_image_base64():
+    not_image_b64 = base64.b64encode(b"not an image").decode()
+    http = FakeImageHttpClient({"choices": [{"message": {"content": not_image_b64}}]})
+    provider = RawMultimodalImageProvider(
+        ModelProfile(
+            model="gpt-image-2",
+            base_url="https://image.example/v1",
+            api_key="image-key",
+            adapter="raw_chat_multimodal",
+        ),
+        http_client=http,
+    )
+
+    with pytest.raises(ValueError, match="did not contain a raster image"):
         await provider.generate_image("Create slide")
 
 
 @pytest.mark.asyncio
 async def test_raw_multimodal_image_provider_normalizes_content_block_data_url():
-    image_b64 = base64.b64encode(b"block-image").decode()
+    image_b64 = base64.b64encode(PNG_BYTES).decode()
     http = FakeImageHttpClient(
         {
             "choices": [

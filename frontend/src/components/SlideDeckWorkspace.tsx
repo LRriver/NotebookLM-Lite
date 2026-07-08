@@ -121,6 +121,7 @@ export const SlideDeckWorkspace: React.FC<SlideDeckWorkspaceProps> = ({ deckId, 
 
     const applyDeck = (nextDeck: SlideDeck) => {
         setDeck(nextDeck);
+        setDownloadUrl(canDownloadPptx(nextDeck) ? `/api/slide-decks/${nextDeck.id}/download?format=pptx` : '');
         if (nextDeck.slides?.length) {
             setSelectedSlideId(prev => prev && nextDeck.slides.some(slide => slide.id === prev) ? prev : nextDeck.slides[0].id);
         }
@@ -319,6 +320,8 @@ export const SlideDeckWorkspace: React.FC<SlideDeckWorkspaceProps> = ({ deckId, 
     const canConfirmPromptPlan = Boolean(deck?.prompt_plan && promptPlanValid && ['prompt_plan_ready', 'prompt_plan_confirmed'].includes(deck.stage));
     const canGenerateSlides = Boolean(deck && (deck.stage === 'prompt_plan_confirmed' || (deck.stage === 'slides_generating' && deck.status === 'failed')));
     const canGenerateOutline = Boolean(deck && ['created', 'outline_ready', 'outline_confirmed'].includes(deck.stage));
+    const canExportDeck = Boolean(deck && hasCompleteSlideImages(deck));
+    const canEditSelectedSlide = Boolean(selectedSlide?.asset_id && selectedSlide.status === 'succeeded');
 
     return (
         <div className="slide-deck-workspace">
@@ -328,7 +331,7 @@ export const SlideDeckWorkspace: React.FC<SlideDeckWorkspaceProps> = ({ deckId, 
                     <h1>{lang === 'zh' ? 'Slide Deck 工作区' : 'Slide Deck Workspace'}</h1>
                     <p>{deck?.title || t.tools.ppt}</p>
                 </div>
-                <button className="primary-btn" onClick={exportPptx} disabled={!deck || isBusy || deck.slides.length === 0}>
+                <button className="primary-btn" onClick={exportPptx} disabled={!deck || isBusy || !canExportDeck}>
                     <Download size={16} />{lang === 'zh' ? '导出 PPTX' : 'Export PPTX'}
                 </button>
                 {downloadUrl && <a className="secondary-btn" href={downloadUrl}><Download size={16} />{lang === 'zh' ? '下载 PPTX' : 'Download PPTX'}</a>}
@@ -417,7 +420,7 @@ export const SlideDeckWorkspace: React.FC<SlideDeckWorkspaceProps> = ({ deckId, 
                                 onChange={event => setEditInstruction(event.target.value)}
                                 placeholder={lang === 'zh' ? '描述这页要怎么改...' : 'Describe how to edit this slide...'}
                             />
-                            <button className="secondary-btn w-full" disabled={!selectedSlide || isBusy || !editInstruction.trim()} onClick={editSlide}><Edit3 size={16} />{lang === 'zh' ? '编辑当前页' : 'Edit current slide'}</button>
+                            <button className="secondary-btn w-full" disabled={!canEditSelectedSlide || isBusy || !editInstruction.trim()} onClick={editSlide}><Edit3 size={16} />{lang === 'zh' ? '编辑当前页' : 'Edit current slide'}</button>
                             {selectedSlide?.edit_history?.length ? (
                                 <div className="edit-history">
                                     <h3>{lang === 'zh' ? '编辑历史' : 'Edit history'}</h3>
@@ -477,4 +480,16 @@ function timestamp(value?: string) {
     if (!value) return 0;
     const parsed = Date.parse(value);
     return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function canDownloadPptx(deck: SlideDeck) {
+    return deck.stage === 'exported' && hasCompleteSlideImages(deck);
+}
+
+function hasCompleteSlideImages(deck: SlideDeck) {
+    return (
+        (deck.status === 'ready' || deck.stage === 'exported')
+        && deck.slides.length > 0
+        && deck.slides.every(slide => slide.status === 'succeeded' && Boolean(slide.asset_id))
+    );
 }

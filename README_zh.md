@@ -82,7 +82,7 @@ backend/
 - **SeekDB**：作为项目知识库与 artifact repository。
 - **LiteLLM**：统一模型调用入口。
 - **Pydantic structured output**：约束 Studio artifacts 和播客脚本生成格式。
-- **原生 Slide Deck workflow**：接入 NotebookLM-Lite 的状态、job、artifact、模型配置和下载体系。集成来源是已验证的 `/Users/lzj/proj/notebook/new_pro/AIPPT` 路径，不从 `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT` 迁移未验证实现。
+- **原生 Slide Deck workflow**：接入 NotebookLM-Lite 的状态、job、artifact、模型配置和下载体系。
 
 ## 快速开始
 
@@ -190,8 +190,8 @@ Slide Deck 集成是 NotebookLM-Lite 的原生能力：
 - 使用同一套 source 选择、LiteLLM/runtime 模型配置、SeekDB 持久化、job API、artifact 列表和下载流程。
 - 工作流保留两层人工确认：大纲确认、提示计划确认。
 - Phase 1 导出的 PPTX 中每一页是生成的整页图片。这是 PPTX export，不承诺每个 PowerPoint 元素都是原生可编辑形状。
-- 本地真实模型测试可以使用 `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml` 中的 PPT 相关模型参数，但凭据必须只保存在本地 ignored config。
-- `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT` 不是本次集成的实现来源。
+- 图片生成和编辑使用 NotebookLM-Lite 同一套运行时模型配置；凭据必须只保存在本地 ignored config。
+- 集成后的工作流是当前仓库的原生能力，不需要运行独立的 AIPPT server。
 
 ## 许可证
 

@@ -42,15 +42,15 @@ NotebookLM-Lite already exposes the required model roles through `api.models`:
 
 - `backend/config.py` defines a shared `ModelProfile` with `model`, `base_url`, `api_key`, `adapter`, `thinking`, `voice`, `response_format`, and `stream` fields.
 - `backend/config.py` defines `ModelProfiles.text_model`, `embedding_model`, `rerank_model`, `audio_model`, `image_model`, and `edit_model`.
-- `backend/dependencies.py` currently wires text and embedding roles through `LiteLLMProvider`; image/edit provider wiring is intentionally still future work covered by tasks 3.4 and 3.5.
+- `backend/dependencies.py` wires text structured planning through `LiteLLMProvider` and image/edit generation through the shared raw multimodal provider behind NotebookLM-Lite model profiles.
 - `backend/infrastructure/llm_providers/litellm_provider.py` supports text completion, structured output, embeddings, OpenAI-compatible base URL forwarding, and provider-prefix model mapping.
 - `config_example.yaml` already documents `image_model` and `edit_model` fields with `model`, `base_url`, `api_key`, and `adapter`.
 
 Local role presence without exposing secret values:
 
 - `text_model`: field exists and is configured locally; intended for outline and prompt-plan structured output.
-- `image_model`: field exists and is configured locally; intended for slide image generation after tasks 3.4/3.5 add the provider path.
-- `edit_model`: field exists and is configured locally; intended for single-slide image editing after tasks 3.4/3.5 add the provider path.
+- `image_model`: field exists and is used for slide image generation.
+- `edit_model`: field exists and is used for single-slide image editing when the configured provider supports image-to-image chat.
 
 The local AIPPT config at `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml` also contains `text_model`, `image_model`, and `edit_model` roles. These values may be used only as local test parameters. Secrets must not be printed, committed, copied into docs, or exposed in screenshots.
 
@@ -64,14 +64,16 @@ Validation commands:
   - Result: unavailable in this shell, `zsh: command not found: openspec`.
 - `/Users/lzj/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m compileall -q backend && git diff --check`
   - Result: passed.
-- `/Users/lzj/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest tests/test_slide_deck_domain_repository.py tests/test_slide_deck_export.py tests/test_slide_deck_model_runtime.py tests/test_slide_deck_workflow_api.py tests/test_ppt_adapter.py tests/test_litellm_runtime.py tests/test_runtime_config_api.py tests/test_config_settings.py -q`
-  - Result: 46 passed, 4 Pydantic deprecation warnings.
+- `/Users/lzj/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest -q`
+  - Result: 89 passed, 4 Pydantic deprecation warnings.
 - `cd frontend && npm test -- --run src/components/SlideDeckWorkspace.test.tsx`
-  - Result: 12 passed.
+  - Result: 15 passed.
 - `cd frontend && npm test -- --run`
-  - Result: 20 passed.
+  - Result: 23 passed.
 - `cd frontend && npm run build`
   - Result: passed.
+- `cd frontend && npm run test:e2e -- interactive-artifacts.spec.ts`
+  - Result: 1 passed after installing the missing Playwright Chromium runtime.
 
 Local services:
 
@@ -114,4 +116,4 @@ Issues found and fixed during validation:
 
 Known limitation from this validation:
 
-- The local AIPPT-derived `edit_model` endpoint returned server errors during earlier real generation attempts. Single-slide regenerate was real-tested successfully. The single-slide edit API/UI path is implemented and covered by mocked tests, but this environment did not provide a working real edit provider.
+- A fresh real single-slide edit smoke reached the configured edit endpoint but returned `524 Server Error` from the remote service. Single-slide regenerate and PPTX export were real-tested successfully. The single-slide edit API/UI path is implemented and covered by automated tests, but this environment still did not provide a successful real edit-provider response.

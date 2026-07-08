@@ -30,6 +30,15 @@ ONE_PIXEL_PNG = base64.b64decode(
 )
 
 
+class FakeImageProvider:
+    async def generate_image(self, prompt: str, aspect_ratio: str = "16:9", quality: str = "2K"):
+        return type(
+            "ImageResult",
+            (),
+            {"base64_data": base64.b64encode(ONE_PIXEL_PNG).decode(), "mime_type": "image/png"},
+        )()
+
+
 def build_export_client(tmp_path: Path):
     repo = InMemoryKnowledgeRepository()
     file_store = SlideDeckFileStore(tmp_path / "output")
@@ -77,7 +86,7 @@ def build_export_client(tmp_path: Path):
     service = SlideDeckService(
         repository=repo,
         planning_service=None,
-        image_provider=None,
+        image_provider=FakeImageProvider(),
         edit_provider=None,
         file_store=file_store,
     )
@@ -119,6 +128,20 @@ def test_slide_deck_export_job_creates_downloadable_image_based_pptx(tmp_path: P
     assert image.content == ONE_PIXEL_PNG
 
 
+def test_slide_deck_export_preserves_four_by_three_dimensions(tmp_path: Path):
+    client, repo, deck = build_export_client(tmp_path)
+    deck.config_snapshot["aspect_ratio"] = "4:3"
+    repo.slide_decks[deck.id] = deck
+
+    job = client.post(f"/api/slide-decks/{deck.id}/export/jobs")
+
+    assert job.status_code == 200
+    export = repo.slide_exports[job.json()["result_ref"]]
+    presentation = Presentation(export.file_path)
+    assert presentation.slide_width == 9144000
+    assert presentation.slide_height == 6858000
+
+
 def test_slide_deck_export_rejects_deck_without_generated_slide_images(tmp_path: Path):
     client, repo, deck = build_export_client(tmp_path)
     deck.slides[0].asset_id = None
@@ -138,6 +161,24 @@ def test_slide_deck_download_requires_successful_export(tmp_path: Path):
 
     assert download.status_code == 404
     assert "export" in download.json()["detail"]
+
+
+def test_slide_deck_download_rejects_export_after_slide_regeneration(tmp_path: Path):
+    client, repo, deck = build_export_client(tmp_path)
+    export_job = client.post(f"/api/slide-decks/{deck.id}/export/jobs")
+    assert export_job.status_code == 200
+    assert export_job.json()["status"] == "succeeded"
+    old_export = repo.slide_exports[export_job.json()["result_ref"]]
+    old_asset_id = deck.slides[0].asset_id
+
+    regenerated = client.post(f"/api/slide-decks/{deck.id}/slides/{deck.slides[0].id}/regenerate")
+    assert regenerated.status_code == 200
+    assert regenerated.json()["slides"][0]["asset_id"] != old_asset_id
+
+    download = client.get(f"/api/slide-decks/{deck.id}/download?format=pptx")
+
+    assert download.status_code == 404
+    assert Path(old_export.file_path).exists()
 
 
 def test_slide_deck_download_returns_clean_errors_for_missing_deck_and_unsupported_format(tmp_path: Path):

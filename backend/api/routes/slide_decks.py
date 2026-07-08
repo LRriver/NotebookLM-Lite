@@ -7,13 +7,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
-from ...config import get_settings
-from ...core.services.slide_deck_planning_service import SlideDeckPlanningService
 from ...core.services.slide_deck_service import SlideDeckService
-from ...dependencies import get_knowledge_repository, get_llm_provider
+from ...dependencies import get_slide_deck_service
 from ...domain.slide_deck import SlideDeckJob, SlideDeckProject, SlideExportFormat
-from ...infrastructure.image_providers.raw_multimodal_provider import RawMultimodalImageProvider
-from ...infrastructure.slide_deck_files import SlideDeckFileStore
 from ..schemas.slide_deck import (
     SlideDeckCreateRequest,
     SlideDeckJobListResponse,
@@ -26,20 +22,6 @@ from ..schemas.slide_deck import (
 )
 
 router = APIRouter(tags=["Slide Decks"])
-
-
-def get_slide_deck_service(
-    repository=Depends(get_knowledge_repository),
-) -> SlideDeckService:
-    settings = get_settings()
-    llm = get_llm_provider(provider="litellm", api_key="", base_url=None, model=None)
-    return SlideDeckService(
-        repository=repository,
-        planning_service=SlideDeckPlanningService(llm),
-        image_provider=RawMultimodalImageProvider(settings.api.models.image_model),
-        edit_provider=RawMultimodalImageProvider(settings.api.models.edit_model),
-        file_store=SlideDeckFileStore(settings.output_dir),
-    )
 
 
 def _deck_response(deck: SlideDeckProject) -> SlideDeckResponse:

@@ -4,17 +4,38 @@ import base64
 import asyncio
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.api.routes.artifacts import router as artifacts_router
 from backend.api.routes.slide_decks import get_slide_deck_service, router as slide_decks_router
 from backend.core.services.slide_deck_service import SlideDeckService
+from backend.config import ModelProfile, Settings
+from backend.dependencies import DependencyContainer
 from backend.dependencies import get_knowledge_repository
-from backend.domain.slide_deck import SlideDeckOutline, SlideOutline, SlidePromptPlan, SlidePromptPlanSet
-from backend.domain.source import KnowledgeSource, SourceKind, SourceStatus
+from backend.domain.slide_deck import (
+    SlideDeckJob,
+    SlideDeckJobStage,
+    SlideDeckOutline,
+    SlideDeckProject,
+    SlideDeckStage,
+    SlideDeckStatus,
+    SlideOutline,
+    SlidePromptPlan,
+    SlidePromptPlanSet,
+    SlideStatus,
+)
+from backend.domain.source import JobStatus, KnowledgeSource, SourceKind, SourceStatus
 from backend.infrastructure.repositories.memory_repository import InMemoryKnowledgeRepository
 from backend.infrastructure.slide_deck_files import SlideDeckFileStore
+
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lrW3MgAAAABJRU5ErkJggg=="
+)
+EDITED_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+)
 
 
 class FakePlanningService:
@@ -58,21 +79,29 @@ class FakeImageProvider:
     def __init__(self):
         self.generated = 0
         self.edited = 0
+        self.last_edit_image_base64 = None
+        self.profile = ModelProfile(
+            model="fake-image-model",
+            base_url="https://image.example/v1",
+            api_key="fake-key",
+            adapter="raw_chat_multimodal",
+        )
 
     async def generate_image(self, prompt, aspect_ratio="16:9", quality="2K"):
         self.generated += 1
         return type(
             "ImageResult",
             (),
-            {"base64_data": base64.b64encode(f"generated-{self.generated}".encode()).decode(), "mime_type": "image/png"},
+            {"base64_data": base64.b64encode(PNG_BYTES).decode(), "mime_type": "image/png"},
         )()
 
     async def edit_image(self, image_base64, instruction, aspect_ratio="16:9", quality="2K"):
         self.edited += 1
+        self.last_edit_image_base64 = image_base64
         return type(
             "ImageResult",
             (),
-            {"base64_data": base64.b64encode(f"edited-{self.edited}".encode()).decode(), "mime_type": "image/png"},
+            {"base64_data": base64.b64encode(EDITED_PNG_BYTES).decode(), "mime_type": "image/png"},
         )()
 
 
@@ -84,7 +113,7 @@ class FailingSecondImageProvider(FakeImageProvider):
         return type(
             "ImageResult",
             (),
-            {"base64_data": base64.b64encode(f"generated-{self.generated}".encode()).decode(), "mime_type": "image/png"},
+            {"base64_data": base64.b64encode(PNG_BYTES).decode(), "mime_type": "image/png"},
         )()
 
 
@@ -109,11 +138,12 @@ def build_client(tmp_path: Path, *, page_count: int = 1, image_provider=None):
 
     asyncio.run(seed())
 
+    edit_provider = FakeImageProvider()
     service = SlideDeckService(
         repository=repo,
         planning_service=FakePlanningService(page_count=page_count),
         image_provider=image_provider or FakeImageProvider(),
-        edit_provider=FakeImageProvider(),
+        edit_provider=edit_provider,
         file_store=SlideDeckFileStore(tmp_path / "output"),
     )
 
@@ -146,6 +176,11 @@ def test_slide_deck_api_full_mocked_workflow_and_recovery(tmp_path: Path):
     assert created.status_code == 200
     deck_id = created.json()["id"]
     assert created.json()["source_snapshot"][0]["title"] == "Alpha Source"
+    assert len(created.json()["source_snapshot"][0]["content_sha256"]) == 64
+    assert created.json()["source_snapshot"][0]["char_count"] == len("Alpha material for a slide deck.")
+    assert created.json()["config_snapshot"]["model_lineage"]["image_model"]["model"] == "fake-image-model"
+    assert created.json()["config_snapshot"]["model_lineage"]["image_model"]["api_key_set"] is True
+    assert "api_key" not in created.json()["config_snapshot"]["model_lineage"]["image_model"]
     assert "api_key" not in created.json()["config_snapshot"]
     assert "token" not in created.json()["config_snapshot"]
     assert "bearer_token" not in created.json()["config_snapshot"]
@@ -191,6 +226,12 @@ def test_slide_deck_api_full_mocked_workflow_and_recovery(tmp_path: Path):
     generated = client.get(f"/api/slide-decks/{deck_id}").json()
     slide_id = generated["slides"][0]["id"]
     assert generated["slides"][0]["status"] == "succeeded"
+    stored_asset = repo.slide_assets[generated["slides"][0]["asset_id"]]
+    assert stored_asset.mime_type == "image/png"
+    assert stored_asset.width == 1
+    assert stored_asset.height == 1
+    assert stored_asset.model_metadata["role"] == "image_model"
+    assert stored_asset.model_metadata["model"] == "fake-image-model"
 
     regenerated = client.post(f"/api/slide-decks/{deck_id}/slides/{slide_id}/regenerate")
     assert regenerated.json()["slides"][0]["asset_id"] != generated["slides"][0]["asset_id"]
@@ -228,6 +269,27 @@ def test_slide_deck_api_rejects_missing_sources(tmp_path: Path):
     assert "source_ids" in response.json()["detail"]
 
 
+def test_slide_deck_service_dependency_is_cached_for_background_job_tracking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo = InMemoryKnowledgeRepository()
+    settings = Settings(output_dir=str(tmp_path / "output"), seekdb_path=str(tmp_path / "knowledge.db"))
+
+    DependencyContainer.reset_runtime_caches()
+    monkeypatch.setattr("backend.dependencies.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        DependencyContainer,
+        "get_knowledge_repository",
+        classmethod(lambda cls, settings=None, force_new=False: repo),
+    )
+
+    first = DependencyContainer.get_slide_deck_service()
+    second = DependencyContainer.get_slide_deck_service()
+
+    assert first is second
+    DependencyContainer.reset_runtime_caches()
+
+
 def test_slide_deck_api_enforces_confirmation_gates(tmp_path: Path):
     client, _ = build_client(tmp_path)
 
@@ -251,8 +313,84 @@ def test_slide_deck_api_enforces_confirmation_gates(tmp_path: Path):
     assert "confirmed prompt plan" in blocked_slides.json()["detail"]
 
 
-def test_slide_generation_can_start_as_background_job_with_inspectable_progress(tmp_path: Path):
-    client, _ = build_client(tmp_path, page_count=2, image_provider=SlowImageProvider())
+def test_slide_deck_api_rejects_invalid_outline_and_prompt_plan_page_sequences(tmp_path: Path):
+    client, _ = build_client(tmp_path, page_count=2)
+
+    created = client.post(
+        "/api/slide-decks",
+        json={"title": "Deck", "source_ids": ["src_alpha"], "config": {"page_count": 2}},
+    )
+    deck_id = created.json()["id"]
+    client.post(f"/api/slide-decks/{deck_id}/outline/jobs")
+    detail = client.get(f"/api/slide-decks/{deck_id}").json()
+
+    empty_outline = {**detail["outline"], "slides": []}
+    response = client.patch(
+        f"/api/slide-decks/{deck_id}/outline",
+        json={"outline": empty_outline, "confirmed": True},
+    )
+    assert response.status_code == 400
+    assert "page sequence" in response.json()["detail"]
+
+    duplicate_outline = {
+        **detail["outline"],
+        "slides": [
+            {**detail["outline"]["slides"][0], "page": 1},
+            {**detail["outline"]["slides"][0], "page": 1, "title": "Duplicate"},
+        ],
+    }
+    response = client.patch(
+        f"/api/slide-decks/{deck_id}/outline",
+        json={"outline": duplicate_outline, "confirmed": True},
+    )
+    assert response.status_code == 400
+    assert "page sequence" in response.json()["detail"]
+
+    client.patch(f"/api/slide-decks/{deck_id}/outline", json={"outline": detail["outline"], "confirmed": True})
+    client.post(f"/api/slide-decks/{deck_id}/prompt-plan/jobs")
+    prompt_plan = client.get(f"/api/slide-decks/{deck_id}").json()["prompt_plan"]
+    missing_page_plan = {**prompt_plan, "slide_prompts": prompt_plan["slide_prompts"][:1]}
+    response = client.patch(
+        f"/api/slide-decks/{deck_id}/prompt-plan",
+        json={"prompt_plan": missing_page_plan, "confirmed": True},
+    )
+    assert response.status_code == 400
+    assert "page sequence" in response.json()["detail"]
+
+
+def test_confirmed_plans_cannot_be_rewritten_after_slide_generation(tmp_path: Path):
+    client, _ = build_client(tmp_path)
+
+    created = client.post(
+        "/api/slide-decks",
+        json={"title": "Deck", "source_ids": ["src_alpha"], "config": {"page_count": 1}},
+    )
+    deck_id = created.json()["id"]
+    client.post(f"/api/slide-decks/{deck_id}/outline/jobs")
+    outline = client.get(f"/api/slide-decks/{deck_id}").json()["outline"]
+    client.patch(f"/api/slide-decks/{deck_id}/outline", json={"outline": outline, "confirmed": True})
+    client.post(f"/api/slide-decks/{deck_id}/prompt-plan/jobs")
+    prompt_plan = client.get(f"/api/slide-decks/{deck_id}").json()["prompt_plan"]
+    client.patch(f"/api/slide-decks/{deck_id}/prompt-plan", json={"prompt_plan": prompt_plan, "confirmed": True})
+    client.post(f"/api/slide-decks/{deck_id}/generate/jobs")
+
+    response = client.patch(
+        f"/api/slide-decks/{deck_id}/outline",
+        json={"outline": {**outline, "title": "Late rewrite"}, "confirmed": True},
+    )
+    assert response.status_code == 400
+    assert "cannot be changed" in response.json()["detail"]
+
+    response = client.patch(
+        f"/api/slide-decks/{deck_id}/prompt-plan",
+        json={"prompt_plan": prompt_plan, "confirmed": True},
+    )
+    assert response.status_code == 400
+    assert "cannot be changed" in response.json()["detail"]
+
+
+def test_edit_slide_requires_existing_generated_image(tmp_path: Path):
+    client, _ = build_client(tmp_path, page_count=2, image_provider=FailingSecondImageProvider())
 
     created = client.post(
         "/api/slide-decks",
@@ -265,20 +403,117 @@ def test_slide_generation_can_start_as_background_job_with_inspectable_progress(
     client.post(f"/api/slide-decks/{deck_id}/prompt-plan/jobs")
     prompt_plan = client.get(f"/api/slide-decks/{deck_id}").json()["prompt_plan"]
     client.patch(f"/api/slide-decks/{deck_id}/prompt-plan", json={"prompt_plan": prompt_plan, "confirmed": True})
+    client.post(f"/api/slide-decks/{deck_id}/generate/jobs")
+    failed_slide = [
+        slide
+        for slide in client.get(f"/api/slide-decks/{deck_id}").json()["slides"]
+        if slide["status"] == "failed"
+    ][0]
 
-    job = client.post(f"/api/slide-decks/{deck_id}/generate/jobs?background=true")
+    response = client.post(
+        f"/api/slide-decks/{deck_id}/slides/{failed_slide['id']}/edit",
+        json={"instruction": "Make this slide more visual"},
+    )
 
-    assert job.status_code == 200
-    assert job.json()["stage"] == "slide_generation"
-    assert job.json()["status"] == "running"
-    started = client.get(f"/api/slide-decks/{deck_id}").json()
-    assert started["stage"] == "slides_generating"
-    assert started["status"] == "generating"
-    assert [slide["status"] for slide in started["slides"]] == ["generating", "pending"]
+    assert response.status_code == 400
+    assert "slide image" in response.json()["detail"]
 
-    detail = client.get(f"/api/slide-decks/jobs/{job.json()['id']}")
-    assert detail.status_code == 200
-    assert detail.json()["stage"] == "slide_generation"
+
+@pytest.mark.asyncio
+async def test_slide_generation_can_start_as_background_job_with_inspectable_progress(tmp_path: Path):
+    repo = InMemoryKnowledgeRepository()
+    await repo.save_source(
+        KnowledgeSource(
+            id="src_alpha",
+            kind=SourceKind.TEXT,
+            title="Alpha Source",
+            text="Alpha material for a slide deck.",
+            status=SourceStatus.READY,
+        )
+    )
+    service = SlideDeckService(
+        repository=repo,
+        planning_service=FakePlanningService(page_count=2),
+        image_provider=SlowImageProvider(),
+        edit_provider=FakeImageProvider(),
+        file_store=SlideDeckFileStore(tmp_path / "output"),
+    )
+    deck = await service.create_deck("Deck", ["src_alpha"], {"page_count": 2})
+    await service.generate_outline(deck.id)
+    deck = await service.get_deck(deck.id)
+    await service.confirm_outline(deck.id, deck.outline, confirmed=True)
+    await service.generate_prompt_plan(deck.id)
+    deck = await service.get_deck(deck.id)
+    await service.confirm_prompt_plan(deck.id, deck.prompt_plan, confirmed=True)
+
+    job = await service.queue_generate_slides(deck.id)
+    await asyncio.sleep(0)
+
+    assert job.stage == SlideDeckJobStage.SLIDE_GENERATION
+    assert job.status == JobStatus.RUNNING
+    started = await service.get_deck(deck.id)
+    assert started.stage == SlideDeckStage.SLIDES_GENERATING
+    assert started.status == SlideDeckStatus.GENERATING
+    assert [slide.status for slide in started.slides] == [SlideStatus.GENERATING, SlideStatus.PENDING]
+
+    detail = await service.get_job(job.id)
+    assert detail.stage == SlideDeckJobStage.SLIDE_GENERATION
+
+    for _ in range(20):
+        detail = await service.get_job(job.id)
+        if detail.status == JobStatus.SUCCEEDED:
+            break
+        await asyncio.sleep(0.05)
+    assert detail.status == JobStatus.SUCCEEDED
+
+
+def test_restarted_service_marks_orphaned_background_slide_job_failed(tmp_path: Path):
+    repo = InMemoryKnowledgeRepository()
+    deck = SlideDeckProject(
+        title="Interrupted deck",
+        source_ids=["src_alpha"],
+        stage=SlideDeckStage.SLIDES_GENERATING,
+        status=SlideDeckStatus.GENERATING,
+        prompt_plan=SlidePromptPlanSet(
+            slide_prompts=[
+                SlidePromptPlan(
+                    page=1,
+                    title="Page 1",
+                    content_summary="Alpha summary",
+                    display_content="Alpha display 1",
+                    prompt="Create alpha slide 1",
+                )
+            ]
+        ),
+    )
+    job = SlideDeckJob(
+        deck_id=deck.id,
+        stage=SlideDeckJobStage.SLIDE_GENERATION,
+        status=JobStatus.RUNNING,
+        progress=0.25,
+    )
+
+    async def seed():
+        await repo.save_slide_deck(deck)
+        await repo.save_slide_deck_job(job)
+
+    asyncio.run(seed())
+    restarted_service = SlideDeckService(
+        repository=repo,
+        planning_service=FakePlanningService(page_count=1),
+        image_provider=FakeImageProvider(),
+        edit_provider=FakeImageProvider(),
+        file_store=SlideDeckFileStore(tmp_path / "output"),
+    )
+
+    recovered = asyncio.run(restarted_service.get_deck(deck.id))
+    recovered_job = asyncio.run(restarted_service.get_job(job.id))
+
+    assert recovered.status == SlideDeckStatus.FAILED
+    assert recovered.stage == SlideDeckStage.SLIDES_GENERATING
+    assert "interrupted" in recovered.error.lower()
+    assert recovered_job.status == JobStatus.FAILED
+    assert "interrupted" in recovered_job.error.lower()
 
 
 def test_outline_generation_cannot_rewind_ready_deck(tmp_path: Path):
@@ -410,6 +645,7 @@ def test_regenerate_and_edit_keep_distinct_asset_files_for_history(tmp_path: Pat
     ).json()
     edit_history = edited["slides"][0]["edit_history"][0]
     assert edit_history["previous_asset_id"] == second_asset.id
+    assert edit_history["model_metadata"]["role"] == "edit_model"
     edited_asset = repo.slide_assets[edit_history["next_asset_id"]]
     assert Path(edited_asset.file_path) not in {first_path, second_path}
     assert second_path.read_bytes() != Path(edited_asset.file_path).read_bytes()

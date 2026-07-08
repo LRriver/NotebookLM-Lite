@@ -298,6 +298,60 @@ describe('SlideDeckWorkspace', () => {
         expect(fetchMock).not.toHaveBeenCalledWith('/api/slide-decks/deck_1/outline/jobs', expect.objectContaining({ method: 'POST' }));
     });
 
+    test('restores the PPTX download link when an exported deck is reopened', async () => {
+        const exportedDeck = deckPatch({
+            outline,
+            prompt_plan: promptPlan,
+            stage: 'exported',
+            status: 'ready',
+            slides: [slide()]
+        });
+        const fetchMock = vi.fn(async () => json(exportedDeck));
+        vi.stubGlobal('fetch', fetchMock);
+
+        renderWorkspace();
+
+        expect(await screen.findByRole('link', { name: /下载 PPTX/ })).toHaveAttribute('href', '/api/slide-decks/deck_1/download?format=pptx');
+    });
+
+    test('does not show a PPTX download link before the current deck is exported', async () => {
+        const readyDeck = deckPatch({
+            outline,
+            prompt_plan: promptPlan,
+            stage: 'slides_ready',
+            status: 'ready',
+            slides: [slide()]
+        });
+        const fetchMock = vi.fn(async () => json(readyDeck));
+        vi.stubGlobal('fetch', fetchMock);
+
+        renderWorkspace();
+
+        expect(await screen.findByAltText('Intro')).toBeInTheDocument();
+        expect(screen.queryByRole('link', { name: /下载 PPTX/ })).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /导出 PPTX/ })).toBeEnabled();
+    });
+
+    test('disables export and current-slide editing when generated images are incomplete', async () => {
+        const failedDeck = deckPatch({
+            outline,
+            prompt_plan: promptPlan,
+            stage: 'slides_generating',
+            status: 'failed',
+            slides: [slide({ status: 'failed', asset_id: null, error: 'image failed' })],
+            error: 'image failed'
+        });
+        const fetchMock = vi.fn(async () => json(failedDeck));
+        vi.stubGlobal('fetch', fetchMock);
+
+        renderWorkspace();
+
+        expect(await screen.findByText('image failed')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /导出 PPTX/ })).toBeDisabled();
+        fireEvent.change(screen.getByPlaceholderText('描述这页要怎么改...'), { target: { value: '更亮' } });
+        expect(screen.getByRole('button', { name: /编辑当前页/ })).toBeDisabled();
+    });
+
     test('resumes polling when a recovered deck is still generating slides', async () => {
         let currentDeck = deckPatch({
             outline,
@@ -554,5 +608,17 @@ const minimalConfig = {
     speechModel: '',
     speechVoice: '',
     speechFormat: 'mp3',
+    imageProvider: 'openai-compatible',
+    imageApiKey: '',
+    imageApiKeySet: false,
+    imageBaseUrl: '',
+    imageModel: '',
+    imageAdapter: 'raw_chat_multimodal',
+    editProvider: 'openai-compatible',
+    editApiKey: '',
+    editApiKeySet: false,
+    editBaseUrl: '',
+    editModel: '',
+    editAdapter: 'raw_chat_multimodal',
     theme: 'light'
 } as const;

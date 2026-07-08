@@ -19,10 +19,11 @@ class SlideDeckPlanningService:
         instruction: str = "",
     ) -> SlideDeckOutline:
         page_count = self._page_count(config)
+        prompt_config = self._prompt_config(config)
         prompt = (
             "Generate a source-grounded slide deck outline.\n\n"
             f"Required page count: {page_count}\n"
-            f"Config: {json.dumps(config, ensure_ascii=False)}\n"
+            f"Config: {json.dumps(prompt_config, ensure_ascii=False)}\n"
             f"Instruction: {instruction or 'Use the source material faithfully.'}\n\n"
             f"Sources:\n{source_context}"
         )
@@ -55,10 +56,11 @@ class SlideDeckPlanningService:
         instruction: str = "",
     ) -> SlidePromptPlanSet:
         page_count = self._page_count(config)
+        prompt_config = self._prompt_config(config)
         prompt = (
             "Generate per-slide display content and image prompts from the confirmed outline.\n\n"
             f"Required page count: {page_count}\n"
-            f"Config: {json.dumps(config, ensure_ascii=False)}\n"
+            f"Config: {json.dumps(prompt_config, ensure_ascii=False)}\n"
             f"Instruction: {instruction or 'Use the confirmed outline faithfully.'}\n\n"
             f"Confirmed outline:\n{outline.model_dump_json()}\n\n"
             f"Sources:\n{source_context}"
@@ -90,3 +92,7 @@ class SlideDeckPlanningService:
         if page_count < 1:
             raise ValueError("page_count must be at least 1")
         return page_count
+
+    @staticmethod
+    def _prompt_config(config: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in config.items() if key != "source_context"}

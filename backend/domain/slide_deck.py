@@ -150,7 +150,9 @@ class SlideDeckExport(BaseModel):
     checksum: str = ""
     download_ref: str = ""
     slide_count: int = 0
+    slide_asset_signature: Optional[str] = None
     status: SlideExportStatus = SlideExportStatus.PENDING
+    model_metadata: dict[str, Any] = Field(default_factory=dict)
     error: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

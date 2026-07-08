@@ -84,6 +84,16 @@ test('renders NotebookLM-like interactive Studio artifacts', async ({ page }) =>
         contentType: 'application/json',
         body: JSON.stringify({ sources, total: sources.length })
     }));
+    await page.route('**/api/notes', route => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ notes: [], total: 0 })
+    }));
+    await page.route('**/api/artifacts', route => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ artifacts: [], total: 0 })
+    }));
     await page.route('**/api/artifacts/generate', async route => {
         const body = route.request().postDataJSON() as { artifact_type: string; instruction?: string };
         if (body.artifact_type === 'flashcards') {
@@ -103,6 +113,47 @@ test('renders NotebookLM-like interactive Studio artifacts', async ({ page }) =>
             })
         });
     });
+    await page.route('**/api/slide-decks', async route => {
+        if (route.request().method() !== 'POST') return route.fallback();
+        return route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+                id: 'deck-e2e',
+                title: 'Slide Deck',
+                source_ids: ['src-material'],
+                source_snapshot: [{ source_id: 'src-material', title: 'learning.md', excerpt: 'TLS protects HTTP.' }],
+                config_snapshot: { aspect_ratio: '16:9', page_count: 6 },
+                outline: null,
+                prompt_plan: null,
+                slides: [],
+                status: 'draft',
+                stage: 'created',
+                error: null,
+                created_at: '2026-06-01T00:00:00Z',
+                updated_at: '2026-06-01T00:00:00Z'
+            })
+        });
+    });
+    await page.route('**/api/slide-decks/deck-e2e', route => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+            id: 'deck-e2e',
+            title: 'Slide Deck',
+            source_ids: ['src-material'],
+            source_snapshot: [{ source_id: 'src-material', title: 'learning.md', excerpt: 'TLS protects HTTP.' }],
+            config_snapshot: { aspect_ratio: '16:9', page_count: 6 },
+            outline: null,
+            prompt_plan: null,
+            slides: [],
+            status: 'draft',
+            stage: 'created',
+            error: null,
+            created_at: '2026-06-01T00:00:00Z',
+            updated_at: '2026-06-01T00:00:00Z'
+        })
+    }));
 
     await page.goto('/');
     await page.locator('input[type="file"]').setInputFiles({
@@ -134,13 +185,10 @@ test('renders NotebookLM-like interactive Studio artifacts', async ({ page }) =>
     await page.getByRole('button', { name: '重做' }).click();
     await expect(page.getByText('得分 1 / 1')).not.toBeVisible();
 
-    let pptMessage = '';
-    page.once('dialog', async dialog => {
-        pptMessage = dialog.message();
-        await dialog.accept();
-    });
     await page.getByRole('button', { name: /^PPT$/ }).click();
-    expect(pptMessage).toContain('功能已开发完成，即将上线');
+    await expect(page.getByText('Slide Deck 工作区')).toBeVisible();
+    await expect(page.getByRole('button', { name: /生成大纲/ })).toBeVisible();
+    await page.getByRole('button', { name: /返回/ }).click();
 
     await page.getByRole('button', { name: /思维图谱/ }).click();
     await page.getByRole('button', { name: '生成', exact: true }).click();

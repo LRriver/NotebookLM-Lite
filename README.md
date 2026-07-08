@@ -82,7 +82,7 @@ Key backend choices:
 - **SeekDB** as the project knowledge repository.
 - **LiteLLM** as the unified model access layer.
 - **Pydantic structured output** for Studio artifacts and podcast scripts.
-- **Native Slide Deck workflow** integrated into NotebookLM-Lite state, jobs, artifacts, model config, and downloads. It is based on the verified `/Users/lzj/proj/notebook/new_pro/AIPPT` implementation path, not `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT`.
+- **Native Slide Deck workflow** integrated into NotebookLM-Lite state, jobs, artifacts, model config, and downloads.
 
 ## Getting Started
 
@@ -190,8 +190,8 @@ The Slide Deck integration is intentionally native to NotebookLM-Lite:
 - It uses the same source selection, LiteLLM/runtime model configuration, SeekDB persistence, job APIs, artifact list, and download flow as the rest of the app.
 - The workflow has two human confirmation points: outline confirmation and prompt-plan confirmation.
 - Phase 1 exports a PPTX where each slide is a generated full-slide image. This is a PPTX export, not a promise that every PowerPoint element is a native editable shape.
-- Local real-model testing can use PPT-related model parameters from `/Users/lzj/proj/notebook/new_pro/AIPPT/config.yaml`, but credentials must stay in local ignored config files.
-- `/Users/lzj/proj/notebook/OpenNotebookLM-AIPPT` is not the implementation source for this integration.
+- Image generation and editing use the same NotebookLM-Lite runtime model profiles as the rest of the app; credentials stay in local ignored config files.
+- The integrated workflow is native to this repository and does not require running a separate AIPPT server.
 
 ## License
 

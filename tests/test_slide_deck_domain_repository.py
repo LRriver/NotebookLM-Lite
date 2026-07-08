@@ -25,7 +25,7 @@ from backend.domain.slide_deck import (
     SlideRecord,
     SlideStatus,
 )
-from backend.domain.source import Job, JobStatus
+from backend.domain.source import Job, JobStatus, KnowledgeChunk
 from backend.infrastructure.slide_deck_files import SlideDeckFileStore
 from backend.infrastructure.repositories.memory_repository import InMemoryKnowledgeRepository
 from backend.infrastructure.repositories.seekdb_repository import SeekDBRepository
@@ -260,6 +260,39 @@ def test_seekdb_repository_uses_separate_embedded_path_for_pyseekdb(tmp_path: Pa
     assert calls == [str(tmp_path / "knowledge.seekdb")]
     assert db_path.is_file()
     assert repo.seekdb_client is not None
+
+
+@pytest.mark.asyncio
+async def test_seekdb_repository_keeps_sqlite_chunks_when_optional_pyseekdb_mirror_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    class FailingCollection:
+        def upsert(self, **kwargs) -> None:
+            raise RuntimeError("default embedding model is unavailable")
+
+    class FakeClient:
+        def __init__(self, path: str) -> None:
+            Path(path).mkdir(parents=True, exist_ok=True)
+
+        def get_or_create_collection(self, name: str):
+            return FailingCollection()
+
+    monkeypatch.setitem(sys.modules, "pyseekdb", types.SimpleNamespace(Client=FakeClient))
+    repo = SeekDBRepository(tmp_path / "knowledge.db")
+    chunk = KnowledgeChunk(
+        id="chunk_1",
+        source_id="src_1",
+        content="Hybrid retrieval should still use the durable SQLite store.",
+        chunk_index=0,
+        metadata={"title": "demo"},
+    )
+
+    await repo.save_chunks("src_1", [chunk])
+
+    loaded = await repo.get_chunks("src_1")
+    results = await repo.search_chunks("hybrid retrieval", top_k=1)
+    assert [item.id for item in loaded] == ["chunk_1"]
+    assert results[0]["chunk"].id == "chunk_1"
 
 
 def test_slide_deck_file_store_writes_ignored_files_and_returns_metadata(tmp_path: Path):

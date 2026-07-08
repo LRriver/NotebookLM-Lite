@@ -9,6 +9,7 @@ SDK.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -18,6 +19,8 @@ from typing import Any
 from ...core.interfaces.knowledge_repository import KnowledgeRepositoryInterface
 from ...domain.slide_deck import SlideAsset, SlideDeckExport, SlideDeckJob, SlideDeckProject
 from ...domain.source import Artifact, Job, KnowledgeChunk, KnowledgeSource, Note, SourceStatus, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 def _dump_model(model: Any) -> str:
@@ -231,12 +234,18 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         self._conn.commit()
 
         if self.seekdb_client is not None and chunks:  # pragma: no cover - requires SDK/runtime
-            collection = self.seekdb_client.get_or_create_collection(name="chunks")
-            collection.upsert(
-                ids=[chunk.id for chunk in chunks],
-                documents=[chunk.content for chunk in chunks],
-                metadatas=[chunk.metadata for chunk in chunks],
-            )
+            try:
+                collection = self.seekdb_client.get_or_create_collection(name="chunks")
+                payload: dict[str, Any] = {
+                    "ids": [chunk.id for chunk in chunks],
+                    "documents": [chunk.content for chunk in chunks],
+                    "metadatas": [chunk.metadata for chunk in chunks],
+                }
+                if all(chunk.embedding is not None for chunk in chunks):
+                    payload["embeddings"] = [chunk.embedding for chunk in chunks]
+                collection.upsert(**payload)
+            except Exception as exc:
+                logger.warning("Skipping optional pyseekdb chunk mirror after save failure: %s", exc)
 
     async def get_chunks(self, source_id: str) -> list[KnowledgeChunk]:
         rows = self._conn.execute(

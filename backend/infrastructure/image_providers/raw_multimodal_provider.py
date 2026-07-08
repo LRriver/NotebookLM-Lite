@@ -69,13 +69,19 @@ class RequestsJsonClient:
 
 
 def _looks_like_raster_image(content: bytes) -> bool:
-    return (
-        content.startswith(b"\x89PNG\r\n\x1a\n")
-        or content.startswith(b"\xff\xd8\xff")
-        or content.startswith(b"GIF87a")
-        or content.startswith(b"GIF89a")
-        or content.startswith(b"RIFF") and content[8:12] == b"WEBP"
-    )
+    return _detect_raster_mime_type(content) is not None
+
+
+def _detect_raster_mime_type(content: bytes) -> str | None:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
+        return "image/gif"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def _ensure_public_image_url(url: str) -> None:
@@ -152,7 +158,8 @@ class RawMultimodalImageProvider:
                 self._headers(),
                 payload,
                 180,
-            )
+            ),
+            allow_http_client_fetch=True,
         )
 
     async def edit_image(
@@ -185,7 +192,8 @@ class RawMultimodalImageProvider:
                 self._headers(),
                 self._payload(content),
                 180,
-            )
+            ),
+            allow_http_client_fetch=True,
         )
 
     def _ensure_configured(self) -> None:
@@ -247,8 +255,13 @@ class RawMultimodalImageProvider:
         data_url = re.match(r"^data:(image/[^;]+);base64,(.+)$", text, re.DOTALL)
         if data_url:
             data = data_url.group(2).strip()
-            base64.b64decode(data, validate=True)
-            return ImageGenerationResult(base64_data=data, mime_type=data_url.group(1))
+            image_bytes = base64.b64decode(data, validate=True)
+            if len(image_bytes) > MAX_GENERATED_IMAGE_BYTES:
+                raise ValueError("generated image is too large")
+            detected_mime = _detect_raster_mime_type(image_bytes)
+            if not detected_mime:
+                raise ValueError("model response did not contain a raster image")
+            return ImageGenerationResult(base64_data=data, mime_type=detected_mime)
         if text.startswith("http://") or text.startswith("https://"):
             if self.image_fetcher is None:
                 if not allow_http_client_fetch or not hasattr(self.http_client, "get_bytes"):
@@ -258,9 +271,20 @@ class RawMultimodalImageProvider:
                 image_bytes = await self.image_fetcher(text)
             else:
                 image_bytes = await asyncio.to_thread(self.image_fetcher, text)
-            return ImageGenerationResult(base64_data=base64.b64encode(image_bytes).decode())
-        base64.b64decode(text, validate=True)
-        return ImageGenerationResult(base64_data=text)
+            detected_mime = _detect_raster_mime_type(image_bytes)
+            if not detected_mime:
+                raise ValueError("model response did not contain a raster image")
+            return ImageGenerationResult(
+                base64_data=base64.b64encode(image_bytes).decode(),
+                mime_type=detected_mime,
+            )
+        image_bytes = base64.b64decode(text, validate=True)
+        if len(image_bytes) > MAX_GENERATED_IMAGE_BYTES:
+            raise ValueError("generated image is too large")
+        detected_mime = _detect_raster_mime_type(image_bytes)
+        if not detected_mime:
+            raise ValueError("model response did not contain a raster image")
+        return ImageGenerationResult(base64_data=text, mime_type=detected_mime)
 
     def _extract_candidate(self, payload: Any) -> Any:
         if isinstance(payload, str):
