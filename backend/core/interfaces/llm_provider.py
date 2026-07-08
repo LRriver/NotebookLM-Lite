@@ -5,7 +5,7 @@ Abstract interface for Language Model providers.
 Supports OpenAI, Google GenAI (Gemini), and OpenAI-compatible APIs.
 """
 from abc import ABC, abstractmethod
-from typing import Type, TypeVar, List, Dict, Any, Optional
+from typing import Type, TypeVar, List, Optional
 from pydantic import BaseModel
 
 T = TypeVar('T', bound=BaseModel)

@@ -5,7 +5,7 @@ Abstract interface for document parsing.
 Supports PDF, DOCX, TXT, Markdown, HTML formats.
 """
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from enum import Enum
 
 

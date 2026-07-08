@@ -5,7 +5,6 @@ Factory methods for creating service instances with proper abstraction.
 Enables easy testing and swapping of implementations.
 """
 from typing import Any, Optional
-from functools import lru_cache
 
 from .config import ModelProfile, Settings, get_settings
 from .core.interfaces.vector_store import VectorStoreInterface

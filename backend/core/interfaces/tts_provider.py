@@ -5,7 +5,7 @@ Abstract interface for Text-to-Speech providers.
 Supports OpenAI TTS, Dashscope CosyVoice, and other TTS services.
 """
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from enum import Enum
 
 

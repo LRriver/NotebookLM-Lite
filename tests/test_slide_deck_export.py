@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pptx import Presentation

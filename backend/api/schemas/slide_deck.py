@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ...domain.slide_deck import SlideDeckOutline, SlidePromptPlanSet, SlideRecord
+from ...domain.slide_deck import SlideDeckOutline, SlidePromptPlanSet
 
 
 class SlideDeckCreateRequest(BaseModel):

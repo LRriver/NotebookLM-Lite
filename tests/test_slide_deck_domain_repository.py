@@ -25,7 +25,7 @@ from backend.domain.slide_deck import (
     SlideRecord,
     SlideStatus,
 )
-from backend.domain.source import Job, JobStatus, KnowledgeChunk
+from backend.domain.source import JobStatus, KnowledgeChunk
 from backend.infrastructure.slide_deck_files import SlideDeckFileStore
 from backend.infrastructure.repositories.memory_repository import InMemoryKnowledgeRepository
 from backend.infrastructure.repositories.seekdb_repository import SeekDBRepository
