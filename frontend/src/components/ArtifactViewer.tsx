@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import type { GeneratedContent } from '../App';
+import { useLanguage, type GeneratedContent } from '../App';
 import { MarkdownView } from './MarkdownView';
 
 type AnyRecord = Record<string, any>;
@@ -24,13 +24,12 @@ const FAQViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = ({ payloa
         <div className="faq-viewer">
             {items.map((item: AnyRecord, index: number) => {
                 const expanded = openIndex === index;
-                const question = textValue(item.question);
+                const question = textValue(item?.question);
                 const answerId = `${answerIdPrefix}-faq-answer-${index}`;
                 return (
                     <div key={`${question}-${index}`} className={`faq-item ${expanded ? 'open' : ''}`}>
                         <button
                             className="faq-question"
-                            aria-label={question}
                             aria-expanded={expanded}
                             aria-controls={answerId}
                             onClick={() => setOpenIndex(expanded ? null : index)}
@@ -38,7 +37,7 @@ const FAQViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = ({ payloa
                             <span>{question}</span>
                             <small aria-hidden="true">{index + 1} / {items.length}</small>
                         </button>
-                        {expanded && <p id={answerId} className="faq-answer">{textValue(item.answer)}</p>}
+                        {expanded && <p id={answerId} className="faq-answer">{textValue(item?.answer)}</p>}
                     </div>
                 );
             })}
@@ -235,12 +234,13 @@ const ReportViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = ({ pay
 const DataTableViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = ({ payload, markdown }) => {
     const columns = Array.isArray(payload.columns) ? payload.columns : [];
     const rows = Array.isArray(payload.rows) ? payload.rows : [];
-    const title = textValue(payload.title || 'Data table');
+    const { lang } = useLanguage();
+    const title = textValue(payload.title || (lang === 'zh' ? '数据表' : 'Data table'));
     if (!columns.length) {
         return <MarkdownView content={markdown || ''} className="artifact-preview" />;
     }
     return (
-        <div className="data-table-viewer data-table-scroll" role="region" aria-label="横向滚动查看完整表格" tabIndex={0}>
+        <div className="data-table-viewer data-table-scroll" role="region" aria-label={title} tabIndex={0}>
             <table>
                 <caption>{title}</caption>
                 <thead>

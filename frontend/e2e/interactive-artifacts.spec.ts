@@ -225,7 +225,7 @@ test('renders NotebookLM-like interactive Studio artifacts', async ({ page }) =>
     await page.getByRole('button', { name: /协议对比表/ }).click();
     await expect(page.getByRole('columnheader', { name: '协议' })).toBeVisible();
     await expect(page.getByRole('cell', { name: 'TLS 加密' })).toBeVisible();
-    const tableRegion = page.getByRole('region', { name: '横向滚动查看完整表格' });
+    const tableRegion = page.getByRole('region', { name: '协议对比表' });
     await expect(tableRegion).toBeVisible();
     await expect.poll(async () => tableRegion.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
 

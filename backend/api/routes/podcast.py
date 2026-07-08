@@ -96,7 +96,7 @@ async def generate_podcast(
         else:
             raise HTTPException(
                 status_code=400,
-                detail="请提供 source_text 或 document_ids"
+                detail="请提供 source_text、source_ids 或 document_ids"
             )
         
         audio_url = f"/api/podcast/download/{result['audio_filename']}" if result.get("audio_filename") else None
@@ -201,7 +201,7 @@ async def generate_script_only(
                 all_text.append(text)
             source_text = "\n\n---\n\n".join(all_text)
         else:
-            raise HTTPException(status_code=400, detail="请提供文本或文档")
+            raise HTTPException(status_code=400, detail="请提供 source_text、source_ids 或 document_ids")
         
         # 生成脚本
         script = await podcast_service.generate_script_only(

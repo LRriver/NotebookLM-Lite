@@ -352,7 +352,7 @@ describe('Markdown rendering', () => {
         fireEvent.click(screen.getByRole('button', { name: '播客脚本 podcast_script' }));
 
         expect(screen.getByRole('link', { name: /MP3/ })).toHaveAttribute('href', '/api/podcast/download/demo.mp3');
-        expect(screen.getByRole('link', { name: /Transcript/ })).toHaveAttribute('href', '/api/podcast/download/demo.md');
+        expect(screen.getByRole('link', { name: /转录文本/ })).toHaveAttribute('href', '/api/podcast/download/demo.md');
         expect(screen.getByRole('link', { name: /Markdown/ })).toHaveAttribute('href', '/api/artifacts/podcast-1/download?format=markdown');
     });
 
@@ -380,7 +380,7 @@ describe('Markdown rendering', () => {
             />
         );
 
-        const scrollRegion = screen.getByLabelText('横向滚动查看完整表格');
+        const scrollRegion = screen.getByLabelText('配置对比');
 
         expect(scrollRegion).toHaveAttribute('role', 'region');
         expect(scrollRegion).toHaveAttribute('tabindex', '0');

@@ -274,7 +274,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, con
                                     {content.downloadJsonUrl && <a className="secondary-btn" href={content.downloadJsonUrl}><Download size={14} /> JSON</a>}
                                     {content.downloadSvgUrl && <a className="secondary-btn" href={content.downloadSvgUrl}><Download size={14} /> SVG</a>}
                                     {content.audioUrl && <a className="secondary-btn" href={content.audioUrl}><Download size={14} /> MP3</a>}
-                                    {content.transcriptUrl && <a className="secondary-btn" href={content.transcriptUrl}><Download size={14} /> Transcript</a>}
+                                    {content.transcriptUrl && <a className="secondary-btn" href={content.transcriptUrl}><Download size={14} /> {lang === 'zh' ? '转录文本' : 'Transcript'}</a>}
                                 </div>
                             </div>
                         )}

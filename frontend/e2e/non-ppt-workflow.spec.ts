@@ -195,11 +195,11 @@ test('non-PPT workflow covers source upload, RAG chat, studio artifacts, and pod
     await expect(page.getByRole('heading', { name: '播客脚本' })).toBeVisible();
     await expect(page.getByRole('listitem').filter({ hasText: '深入讨论' })).toBeVisible();
     await expect(page.getByRole('link', { name: /MP3/ })).toHaveAttribute('href', /demo\.mp3/);
-    await expect(page.getByRole('link', { name: /Transcript/ })).toHaveAttribute('href', /demo\.md/);
+    await expect(page.getByRole('link', { name: /转录文本/ })).toHaveAttribute('href', /demo\.md/);
 
     await page.reload();
     await page.getByRole('button', { name: /播客脚本/ }).click();
     await expect(page.getByRole('heading', { name: '播客脚本' })).toBeVisible();
     await expect(page.getByRole('link', { name: /MP3/ })).toHaveAttribute('href', /demo\.mp3/);
-    await expect(page.getByRole('link', { name: /Transcript/ })).toHaveAttribute('href', /demo\.md/);
+    await expect(page.getByRole('link', { name: /转录文本/ })).toHaveAttribute('href', /demo\.md/);
 });
