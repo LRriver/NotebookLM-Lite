@@ -5,6 +5,7 @@ import { ChatPanel } from './components/ChatPanel';
 import { StudioPanel } from './components/StudioPanel';
 import { ConfigModal } from './components/ConfigModal';
 import { NotesPanel } from './components/NotesPanel';
+import { SlideDeckWorkspace } from './components/SlideDeckWorkspace';
 
 export type Language = 'zh' | 'en';
 export const LanguageContext = createContext<{ lang: Language; setLang: (l: Language) => void }>({
@@ -96,6 +97,18 @@ export interface ApiConfig {
     speechModel: string;
     speechVoice: string;
     speechFormat: string;
+    imageProvider: 'openai-compatible';
+    imageApiKey: string;
+    imageApiKeySet: boolean;
+    imageBaseUrl: string;
+    imageModel: string;
+    imageAdapter: string;
+    editProvider: 'openai-compatible';
+    editApiKey: string;
+    editApiKeySet: boolean;
+    editBaseUrl: string;
+    editModel: string;
+    editAdapter: string;
     theme: 'light' | 'dark';
 }
 
@@ -132,6 +145,9 @@ function App() {
     const [generatedContents, setGeneratedContents] = useState<GeneratedContent[]>([]);
     const [notesRefreshKey, setNotesRefreshKey] = useState(0);
     const [showConfig, setShowConfig] = useState(false);
+    const [slideDeckWorkspaceId, setSlideDeckWorkspaceId] = useState<string | null | undefined>(() => {
+        return localStorage.getItem('notebooklm-active-slide-deck') || undefined;
+    });
     const [config, setConfig] = useState<ApiConfig>({
         textProvider: 'litellm',
         textApiKey: '',
@@ -156,6 +172,18 @@ function App() {
         speechModel: '',
         speechVoice: '',
         speechFormat: 'mp3',
+        imageProvider: 'openai-compatible',
+        imageApiKey: '',
+        imageApiKeySet: false,
+        imageBaseUrl: '',
+        imageModel: '',
+        imageAdapter: 'raw_chat_multimodal',
+        editProvider: 'openai-compatible',
+        editApiKey: '',
+        editApiKeySet: false,
+        editBaseUrl: '',
+        editModel: '',
+        editAdapter: 'raw_chat_multimodal',
         theme: (localStorage.getItem('notebooklm-theme') as 'light' | 'dark') || 'light'
     });
 
@@ -168,6 +196,7 @@ function App() {
 
     useEffect(() => {
         refreshSources();
+        refreshArtifacts();
         loadRuntimeConfig();
     }, []);
 
@@ -181,6 +210,8 @@ function App() {
         const embedding = models.embedding_model || {};
         const rerank = models.rerank_model || {};
         const speech = models.audio_model || {};
+        const image = models.image_model || {};
+        const edit = models.edit_model || {};
         return {
             ...current,
             textApiKeySet: Boolean(text.api_key_set),
@@ -197,7 +228,15 @@ function App() {
             speechBaseUrl: speech.base_url || current.speechBaseUrl,
             speechModel: speech.model || current.speechModel,
             speechVoice: speech.voice || current.speechVoice,
-            speechFormat: speech.response_format || current.speechFormat
+            speechFormat: speech.response_format || current.speechFormat,
+            imageApiKeySet: Boolean(image.api_key_set),
+            imageBaseUrl: image.base_url || current.imageBaseUrl,
+            imageModel: image.model || current.imageModel,
+            imageAdapter: image.adapter || current.imageAdapter,
+            editApiKeySet: Boolean(edit.api_key_set),
+            editBaseUrl: edit.base_url || current.editBaseUrl,
+            editModel: edit.model || current.editModel,
+            editAdapter: edit.adapter || current.editAdapter
         };
     };
 
@@ -242,6 +281,18 @@ function App() {
                     response_format: nextConfig.speechFormat,
                     adapter: 'openai_speech',
                     stream: true
+                },
+                image_model: {
+                    model: nextConfig.imageModel,
+                    base_url: nextConfig.imageBaseUrl,
+                    api_key: nextConfig.imageApiKey,
+                    adapter: nextConfig.imageAdapter
+                },
+                edit_model: {
+                    model: nextConfig.editModel,
+                    base_url: nextConfig.editBaseUrl,
+                    api_key: nextConfig.editApiKey,
+                    adapter: nextConfig.editAdapter
                 }
             }
         };
@@ -259,8 +310,50 @@ function App() {
         setConfig(prev => ({ ...prev, theme: prev.theme === 'light' ? 'dark' : 'light' }));
     };
 
+    const refreshArtifacts = async () => {
+        try {
+            const response = await fetch('/api/artifacts');
+            if (!response.ok) return;
+            const payload = await response.json();
+            const artifacts = (payload.artifacts || []).map((artifact: any) => ({
+                id: artifact.id,
+                type: artifact.artifact_type,
+                title: artifact.title,
+                createdAt: new Date(artifact.created_at),
+                markdown: artifact.markdown,
+                payload: artifact.payload,
+                downloadJsonUrl: `/api/artifacts/${artifact.id}/download?format=json`,
+                downloadMarkdownUrl: `/api/artifacts/${artifact.id}/download?format=markdown`,
+                downloadSvgUrl: artifact.artifact_type === 'infographic' ? `/api/artifacts/${artifact.id}/download?format=svg` : undefined
+            }));
+            setGeneratedContents(artifacts);
+        } catch {
+            // Generated artifacts are optional for initial rendering.
+        }
+    };
+
+    const openSlideDeck = (deckId: string | null) => {
+        setSlideDeckWorkspaceId(deckId);
+        if (deckId) {
+            localStorage.setItem('notebooklm-active-slide-deck', deckId);
+        } else {
+            localStorage.removeItem('notebooklm-active-slide-deck');
+        }
+    };
+
+    const closeSlideDeck = () => {
+        setSlideDeckWorkspaceId(undefined);
+        localStorage.removeItem('notebooklm-active-slide-deck');
+        refreshArtifacts();
+    };
+
+    const rememberSlideDeck = (deckId: string) => {
+        setSlideDeckWorkspaceId(deckId);
+        localStorage.setItem('notebooklm-active-slide-deck', deckId);
+    };
+
     const handleContentGenerated = (content: GeneratedContent) => {
-        setGeneratedContents(prev => [content, ...prev]);
+        setGeneratedContents(prev => [content, ...prev.filter(item => item.id !== content.id)]);
     };
 
     return (
@@ -286,38 +379,49 @@ function App() {
                     </div>
                 </header>
 
-                <main className="app-main">
-                    <div className="panel panel-left split-panel">
-                        <SourcePanel
-                            sources={sources}
-                            selectedSourceIds={selectedSourceIds}
-                            onSourcesChange={setSources}
-                            onSelectedSourceIdsChange={setSelectedSourceIds}
-                            onRefresh={refreshSources}
-                        />
-                        <NotesPanel
-                            selectedSourceIds={selectedSourceIds}
-                            onSourceCreated={refreshSources}
-                            refreshKey={notesRefreshKey}
-                        />
-                    </div>
-                    <div className="panel panel-center">
-                        <ChatPanel
-                            sourceIds={selectedSourceIds}
-                            config={config}
-                            onSourceCreated={refreshSources}
-                            onNoteCreated={() => setNotesRefreshKey(key => key + 1)}
-                        />
-                    </div>
-                    <div className="panel panel-right">
-                        <StudioPanel
-                            sourceIds={selectedSourceIds}
-                            config={config}
-                            contents={generatedContents}
-                            onContentGenerated={handleContentGenerated}
-                        />
-                    </div>
-                </main>
+                {slideDeckWorkspaceId !== undefined ? (
+                    <SlideDeckWorkspace
+                        deckId={slideDeckWorkspaceId}
+                        sourceIds={selectedSourceIds}
+                        onBack={closeSlideDeck}
+                        onArtifactGenerated={handleContentGenerated}
+                        onDeckReady={rememberSlideDeck}
+                    />
+                ) : (
+                    <main className="app-main">
+                        <div className="panel panel-left split-panel">
+                            <SourcePanel
+                                sources={sources}
+                                selectedSourceIds={selectedSourceIds}
+                                onSourcesChange={setSources}
+                                onSelectedSourceIdsChange={setSelectedSourceIds}
+                                onRefresh={refreshSources}
+                            />
+                            <NotesPanel
+                                selectedSourceIds={selectedSourceIds}
+                                onSourceCreated={refreshSources}
+                                refreshKey={notesRefreshKey}
+                            />
+                        </div>
+                        <div className="panel panel-center">
+                            <ChatPanel
+                                sourceIds={selectedSourceIds}
+                                config={config}
+                                onSourceCreated={refreshSources}
+                                onNoteCreated={() => setNotesRefreshKey(key => key + 1)}
+                            />
+                        </div>
+                        <div className="panel panel-right">
+                            <StudioPanel
+                                sourceIds={selectedSourceIds}
+                                config={config}
+                                contents={generatedContents}
+                                onContentGenerated={handleContentGenerated}
+                                onOpenSlideDeck={openSlideDeck}
+                            />
+                        </div>
+                    </main>
+                )}
 
                 {showConfig && (
                     <ConfigModal

@@ -20,6 +20,7 @@ from .api.routes.artifacts import router as artifacts_router
 from .api.routes.podcast import router as podcast_router
 from .api.routes.sources import router as sources_router
 from .api.routes.notes import router as notes_router
+from .api.routes.slide_decks import router as slide_decks_router
 
 
 @asynccontextmanager
@@ -61,6 +62,7 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(artifacts_router, prefix="/api")
 app.include_router(podcast_router, prefix="/api")
 app.include_router(notes_router, prefix="/api")
+app.include_router(slide_decks_router, prefix="/api")
 
 
 # 健康检查

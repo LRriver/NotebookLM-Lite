@@ -41,6 +41,18 @@ const config: ApiConfig = {
     speechModel: '',
     speechVoice: '',
     speechFormat: 'mp3',
+    imageProvider: 'openai-compatible',
+    imageApiKey: '',
+    imageApiKeySet: false,
+    imageBaseUrl: '',
+    imageModel: '',
+    imageAdapter: 'raw_chat_multimodal',
+    editProvider: 'openai-compatible',
+    editApiKey: '',
+    editApiKeySet: false,
+    editBaseUrl: '',
+    editModel: '',
+    editAdapter: 'raw_chat_multimodal',
     theme: 'light'
 };
 
@@ -253,6 +265,7 @@ describe('Markdown rendering', () => {
                 config={config}
                 contents={contents}
                 onContentGenerated={vi.fn()}
+                onOpenSlideDeck={vi.fn()}
             />
         );
 

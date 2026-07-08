@@ -23,6 +23,10 @@ def test_runtime_config_is_redacted_and_preserves_blank_keys(monkeypatch, sample
     payload = loaded.json()
     assert payload["models"]["text_model"]["api_key_set"] is True
     assert "api_key" not in payload["models"]["text_model"]
+    assert payload["models"]["image_model"]["api_key_set"] is True
+    assert payload["models"]["edit_model"]["api_key_set"] is True
+    assert "api_key" not in payload["models"]["image_model"]
+    assert "api_key" not in payload["models"]["edit_model"]
 
     saved = client.post(
         "/api/config",

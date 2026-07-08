@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Cpu, Database, Key, Mic, Rows3, X } from 'lucide-react';
+import { Cpu, Database, Image, Key, Mic, PencilLine, Rows3, X } from 'lucide-react';
 import type { ApiConfig } from '../App';
 import { useLanguage } from '../App';
 
@@ -94,6 +94,33 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ config, onConfigChange
                         </div>
                         <input value={localConfig.speechVoice} onChange={e => setValue('speechVoice', e.target.value)} placeholder="voice" className="search-input" />
                         <input value={localConfig.speechFormat} onChange={e => setValue('speechFormat', e.target.value)} placeholder="mp3" className="search-input" />
+                    </section>
+                    <section className="space-y-3">
+                        <div className="config-section-title"><Image size={19} /> {lang === 'zh' ? '图片生成模型' : 'Image Model'}</div>
+                        <input value={localConfig.imageModel} onChange={e => setValue('imageModel', e.target.value)} placeholder="Qwen/Qwen-Image, gpt-image-1..." className="search-input" />
+                        <input value={localConfig.imageBaseUrl} onChange={e => setValue('imageBaseUrl', e.target.value)} placeholder="https://api.example.com/v1" className="search-input" />
+                        <select value={localConfig.imageAdapter} onChange={e => setValue('imageAdapter', e.target.value)} className="search-input">
+                            <option value="raw_chat_multimodal">raw chat multimodal</option>
+                            <option value="openai_image">OpenAI images</option>
+                            <option value="siliconflow_image">SiliconFlow images</option>
+                        </select>
+                        <div className="relative">
+                            <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                            <input type="password" value={localConfig.imageApiKey} onChange={e => setValue('imageApiKey', e.target.value)} placeholder={keyPlaceholder(localConfig.imageApiKeySet, 'Image')} className="search-input pl-9" />
+                        </div>
+                    </section>
+                    <section className="space-y-3">
+                        <div className="config-section-title"><PencilLine size={19} /> {lang === 'zh' ? '图片编辑模型' : 'Image Edit Model'}</div>
+                        <input value={localConfig.editModel} onChange={e => setValue('editModel', e.target.value)} placeholder="multimodal edit model" className="search-input" />
+                        <input value={localConfig.editBaseUrl} onChange={e => setValue('editBaseUrl', e.target.value)} placeholder="https://api.example.com/v1" className="search-input" />
+                        <select value={localConfig.editAdapter} onChange={e => setValue('editAdapter', e.target.value)} className="search-input">
+                            <option value="raw_chat_multimodal">raw chat multimodal</option>
+                            <option value="openai_chat">OpenAI-compatible chat</option>
+                        </select>
+                        <div className="relative">
+                            <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                            <input type="password" value={localConfig.editApiKey} onChange={e => setValue('editApiKey', e.target.value)} placeholder={keyPlaceholder(localConfig.editApiKeySet, 'Edit')} className="search-input pl-9" />
+                        </div>
                     </section>
                 </div>
                 <div className="config-modal-foot p-5 flex items-center justify-between gap-3">

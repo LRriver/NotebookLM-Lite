@@ -17,7 +17,7 @@ class MiniSchema(BaseModel):
 
 
 @pytest.mark.asyncio
-async def test_litellm_text_generation_forwards_base_url_and_thinking(fake_litellm_client):
+async def test_litellm_text_generation_forwards_base_url_and_omits_disabled_thinking(fake_litellm_client):
     profile = ModelProfile(
         model="openai/test-chat",
         base_url="https://model.example/v1",
@@ -34,7 +34,24 @@ async def test_litellm_text_generation_forwards_base_url_and_thinking(fake_litel
     assert call["model"] == "openai/test-chat"
     assert call["api_base"] == "https://model.example/v1"
     assert call["api_key"] == "test-key"
-    assert call["thinking"] == {"type": "disabled"}
+    assert "thinking" not in call
+
+
+@pytest.mark.asyncio
+async def test_litellm_text_generation_forwards_enabled_thinking(fake_litellm_client):
+    profile = ModelProfile(
+        model="openai/test-chat",
+        base_url="https://model.example/v1",
+        api_key="test-key",
+        thinking=ThinkingConfig(type="enabled"),
+    )
+    fake_litellm_client.push_response({"choices": [{"message": {"content": "hello"}}]})
+    provider = LiteLLMProvider(profile=profile, client=fake_litellm_client)
+
+    text = await provider.generate("Say hi", temperature=0.2)
+
+    assert text == "hello"
+    assert fake_litellm_client.completion_calls[0]["thinking"] == {"type": "enabled"}
 
 
 @pytest.mark.asyncio

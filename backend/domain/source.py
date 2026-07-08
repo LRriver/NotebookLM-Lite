@@ -43,6 +43,7 @@ class ArtifactType(str, Enum):
     DATA_TABLE = "data_table"
     PODCAST_SCRIPT = "podcast_script"
     PPT_OUTLINE = "ppt_outline"
+    SLIDE_DECK = "slide_deck"
     VIDEO_OVERVIEW = "video_overview"
     INFOGRAPHIC = "infographic"
 

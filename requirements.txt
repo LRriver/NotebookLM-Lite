@@ -20,6 +20,7 @@ requests>=2.31.0
 docling>=2.96.0
 pypdf>=5.0.0
 python-docx>=0.8.11
+python-pptx>=1.0.0
 beautifulsoup4>=4.12.0
 
 # Text Processing
