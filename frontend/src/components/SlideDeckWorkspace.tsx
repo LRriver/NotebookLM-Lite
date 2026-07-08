@@ -442,8 +442,20 @@ const EditableJson: React.FC<{
     onValidChange: (valid: boolean) => void;
 }> = ({ title, value, onChange, onValidChange }) => {
     const [text, setText] = useState('');
+    const textRef = useRef(text);
 
     useEffect(() => {
+        textRef.current = text;
+    }, [text]);
+
+    useEffect(() => {
+        try {
+            if (value && JSON.stringify(value) === JSON.stringify(JSON.parse(textRef.current))) {
+                return;
+            }
+        } catch {
+            // Invalid editor text should be replaced when parent value changes.
+        }
         setText(value ? JSON.stringify(value, null, 2) : '');
         onValidChange(true);
     }, [value]);
@@ -457,6 +469,7 @@ const EditableJson: React.FC<{
                 value={text}
                 onChange={event => {
                     const next = event.target.value;
+                    textRef.current = next;
                     setText(next);
                     try {
                         onChange(JSON.parse(next));
@@ -472,7 +485,20 @@ const EditableJson: React.FC<{
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
     const response = await fetch(url, init);
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) {
+        const contentType = response.headers?.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            try {
+                const payload = await response.json();
+                const detail = payload?.detail ?? payload?.message ?? payload;
+                throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+            } catch (err) {
+                if (err instanceof Error) throw err;
+            }
+        }
+        const text = await response.text();
+        throw new Error(text || `${response.status} ${response.statusText}`);
+    }
     return response.json();
 }
 

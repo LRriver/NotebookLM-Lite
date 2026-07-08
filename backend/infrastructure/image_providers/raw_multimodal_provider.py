@@ -92,7 +92,7 @@ def _ensure_public_image_url(url: str) -> None:
     if host in {"localhost", "localhost.localdomain"}:
         raise ValueError("generated image URL host is not allowed")
 
-    def reject_private(address: str) -> None:
+    def reject_private_ip(address: str) -> None:
         ip = ipaddress.ip_address(address)
         if (
             ip.is_private
@@ -105,15 +105,16 @@ def _ensure_public_image_url(url: str) -> None:
             raise ValueError("generated image URL host is not allowed")
 
     try:
-        reject_private(host)
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        reject_private_ip(host)
         return
-    except ValueError as exc:
-        if "does not appear to be an IPv4 or IPv6 address" not in str(exc):
-            raise
 
     try:
         for result in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
-            reject_private(result[4][0])
+            reject_private_ip(result[4][0])
     except socket.gaierror as exc:
         raise ValueError("generated image URL host could not be resolved") from exc
 

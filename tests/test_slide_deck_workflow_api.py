@@ -419,6 +419,35 @@ def test_edit_slide_requires_existing_generated_image(tmp_path: Path):
     assert "slide image" in response.json()["detail"]
 
 
+def test_edit_slide_returns_clean_error_when_asset_file_is_missing(tmp_path: Path):
+    client, repo = build_client(tmp_path)
+
+    created = client.post(
+        "/api/slide-decks",
+        json={"title": "Deck", "source_ids": ["src_alpha"], "config": {"page_count": 1}},
+    )
+    deck_id = created.json()["id"]
+    client.post(f"/api/slide-decks/{deck_id}/outline/jobs")
+    outline = client.get(f"/api/slide-decks/{deck_id}").json()["outline"]
+    client.patch(f"/api/slide-decks/{deck_id}/outline", json={"outline": outline, "confirmed": True})
+    client.post(f"/api/slide-decks/{deck_id}/prompt-plan/jobs")
+    prompt_plan = client.get(f"/api/slide-decks/{deck_id}").json()["prompt_plan"]
+    client.patch(f"/api/slide-decks/{deck_id}/prompt-plan", json={"prompt_plan": prompt_plan, "confirmed": True})
+    client.post(f"/api/slide-decks/{deck_id}/generate/jobs")
+    generated = client.get(f"/api/slide-decks/{deck_id}").json()
+    slide = generated["slides"][0]
+    asset = repo.slide_assets[slide["asset_id"]]
+    Path(asset.file_path).unlink()
+
+    response = client.post(
+        f"/api/slide-decks/{deck_id}/slides/{slide['id']}/edit",
+        json={"instruction": "Make this brighter"},
+    )
+
+    assert response.status_code == 400
+    assert "slide image file not found" in response.json()["detail"]
+
+
 @pytest.mark.asyncio
 async def test_slide_generation_can_start_as_background_job_with_inspectable_progress(tmp_path: Path):
     repo = InMemoryKnowledgeRepository()

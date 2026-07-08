@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
+import socket
 
 import pytest
 
 from backend.config import ModelProfile
+from backend.core.services.slide_deck_service import SlideDeckService
 from backend.core.services.slide_deck_planning_service import SlideDeckPlanningService
 from backend.domain.slide_deck import (
     SlideDeckOutline,
@@ -15,6 +18,7 @@ from backend.domain.slide_deck import (
 from backend.infrastructure.image_providers.raw_multimodal_provider import (
     RawMultimodalImageProvider,
     RequestsJsonClient,
+    _ensure_public_image_url,
 )
 
 PNG_BYTES = base64.b64decode(
@@ -343,6 +347,32 @@ async def test_generated_image_url_download_rejects_localhost():
 
     with pytest.raises(ValueError, match="not allowed"):
         await client.get_bytes("http://127.0.0.1/private.png", 1)
+
+
+def test_generated_image_url_allows_hostname_when_ip_parse_error_message_changes(monkeypatch: pytest.MonkeyPatch):
+    original_ip_address = ipaddress.ip_address
+
+    def fake_ip_address(value: str):
+        if value == "cdn.example":
+            raise ValueError("not an IP literal")
+        return original_ip_address(value)
+
+    monkeypatch.setattr(
+        "backend.infrastructure.image_providers.raw_multimodal_provider.ipaddress.ip_address",
+        fake_ip_address,
+    )
+    monkeypatch.setattr(
+        "backend.infrastructure.image_providers.raw_multimodal_provider.socket.getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))],
+    )
+
+    _ensure_public_image_url("https://cdn.example/slide.png")
+
+
+def test_slide_deck_jpeg_dimensions_rejects_short_sof_segment():
+    malformed = b"\xff\xd8\xff\xc0\x00\x06" + b"\x00" * 20
+
+    assert SlideDeckService._jpeg_dimensions(malformed) == (None, None)
 
 
 @pytest.mark.asyncio

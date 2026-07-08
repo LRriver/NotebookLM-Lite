@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import struct
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -447,9 +448,12 @@ class SlideDeckService:
         if not previous_asset_id:
             raise ValueError("slide image is required before editing")
         asset = await self.repository.get_slide_asset(previous_asset_id)
-        if not asset:
+        if not asset or not asset.file_path:
             raise ValueError("slide image is required before editing")
-        with open(asset.file_path, "rb") as file:
+        path = Path(asset.file_path)
+        if not path.exists():
+            raise ValueError(f"slide image file not found: {asset.file_path}")
+        with path.open("rb") as file:
             image_b64 = base64.b64encode(file.read()).decode()
         edited = await self.edit_provider.edit_image(
             image_b64,
@@ -661,6 +665,8 @@ class SlideDeckService:
             if segment_length < 2 or index + segment_length > len(content):
                 break
             if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                if segment_length < 7:
+                    break
                 height = int.from_bytes(content[index + 3 : index + 5], "big")
                 width = int.from_bytes(content[index + 5 : index + 7], "big")
                 return width, height

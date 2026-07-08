@@ -332,6 +332,51 @@ describe('SlideDeckWorkspace', () => {
         expect(screen.getByRole('button', { name: /导出 PPTX/ })).toBeEnabled();
     });
 
+    test('keeps valid JSON editor text stable while typing', async () => {
+        const outlineDeck = deckPatch({
+            outline,
+            stage: 'outline_ready'
+        });
+        const fetchMock = vi.fn(async () => json(outlineDeck));
+        vi.stubGlobal('fetch', fetchMock);
+
+        renderWorkspace();
+
+        const outlineEditor = await screen.findByLabelText('大纲');
+        const compactOutline = JSON.stringify({ ...outline, title: 'Edited title' });
+        fireEvent.change(outlineEditor, { target: { value: compactOutline } });
+
+        expect(outlineEditor).toHaveValue(compactOutline);
+    });
+
+    test('shows FastAPI JSON error details instead of raw response text', async () => {
+        const readyDeck = deckPatch({
+            outline,
+            prompt_plan: promptPlan,
+            stage: 'slides_ready',
+            status: 'ready',
+            slides: [slide()]
+        });
+        const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            const method = init?.method || 'GET';
+            if (url === '/api/slide-decks/deck_1' && method === 'GET') return json(readyDeck);
+            if (url === '/api/slide-decks/deck_1/export/jobs' && method === 'POST') {
+                return jsonError({ detail: 'Export failed cleanly' });
+            }
+            return json(readyDeck);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        renderWorkspace();
+
+        expect(await screen.findByAltText('Intro')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: /导出 PPTX/ }));
+
+        expect(await screen.findByText('Export failed cleanly')).toBeInTheDocument();
+        expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument();
+    });
+
     test('disables export and current-slide editing when generated images are incomplete', async () => {
         const failedDeck = deckPatch({
             outline,
@@ -572,6 +617,15 @@ function json(payload: unknown) {
         json: async () => payload,
         text: async () => JSON.stringify(payload)
     } as Response;
+}
+
+function jsonError(payload: unknown) {
+    return {
+        ok: false,
+        headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'application/json' : null },
+        json: async () => payload,
+        text: async () => JSON.stringify(payload)
+    } as unknown as Response;
 }
 
 function deferred<T>() {
