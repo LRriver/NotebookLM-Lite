@@ -67,7 +67,19 @@ app.include_router(slide_decks_router, prefix="/api")
 # 健康检查
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": settings.app_version}
+    from .dependencies import get_vector_store
+
+    vector_store = get_vector_store()
+    stats = await vector_store.get_stats()
+    storage = stats.get("storage", {})
+    return {
+        "status": "healthy",
+        "version": settings.app_version,
+        "storage": {
+            "actual_vector_backend": storage.get("vector_backend", stats.get("backend", "unknown")),
+            "native_available": storage.get("native_available", False),
+        },
+    }
 
 
 # 向量存储统计

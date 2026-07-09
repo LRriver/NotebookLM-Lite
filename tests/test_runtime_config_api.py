@@ -8,6 +8,19 @@ from backend.config import Settings, _RUNTIME_MODEL_OVERRIDES, get_settings
 from backend.dependencies import DependencyContainer
 
 
+class FakeVectorStore:
+    def __init__(self, status: dict) -> None:
+        self.status = status
+
+    async def get_stats(self) -> dict:
+        return {
+            "total_documents": 0,
+            "total_chunks": 0,
+            "backend": self.status["vector_backend"],
+            "storage": self.status,
+        }
+
+
 def test_runtime_config_is_redacted_and_preserves_blank_keys(monkeypatch, sample_config_file):
     monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(sample_config_file))
     _RUNTIME_MODEL_OVERRIDES.clear()
@@ -72,3 +85,76 @@ def test_runtime_cache_reset_recreates_knowledge_repository_with_new_storage_set
         assert second_repo.allow_sqlite_vector_fallback is False
     finally:
         DependencyContainer.reset_runtime_caches()
+
+
+def test_runtime_config_exposes_actual_vector_backend(monkeypatch, sample_config_file):
+    monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(sample_config_file))
+    monkeypatch.setattr(
+        DependencyContainer,
+        "get_vector_store",
+        staticmethod(
+            lambda settings=None: FakeVectorStore(
+                {"vector_backend": "seekdb", "native_available": True}
+            )
+        ),
+    )
+    get_settings.cache_clear()
+    DependencyContainer.reset_runtime_caches()
+
+    app = FastAPI()
+    app.include_router(config_router, prefix="/api")
+    client = TestClient(app)
+
+    response = client.get("/api/config")
+
+    assert response.status_code == 200
+    storage = response.json()["storage"]
+    assert storage["configured_vector_store_type"] == "seekdb"
+    assert storage["vector_store_type"] == "seekdb"
+    assert storage["actual_vector_backend"] == "seekdb"
+    assert storage["native_available"] is True
+
+    get_settings.cache_clear()
+    DependencyContainer.reset_runtime_caches()
+
+
+def test_runtime_config_exposes_sqlite_fallback_status(monkeypatch, sample_config_file):
+    monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(sample_config_file))
+    monkeypatch.setattr(
+        DependencyContainer,
+        "get_vector_store",
+        staticmethod(
+            lambda settings=None: FakeVectorStore(
+                {"vector_backend": "sqlite_fallback", "native_available": False}
+            )
+        ),
+    )
+
+    app = FastAPI()
+    app.include_router(config_router, prefix="/api")
+    client = TestClient(app)
+
+    response = client.get("/api/config")
+
+    assert response.status_code == 200
+    storage = response.json()["storage"]
+    assert storage["configured_vector_store_type"] == "seekdb"
+    assert storage["actual_vector_backend"] == "sqlite_fallback"
+    assert storage["native_available"] is False
+
+
+def test_health_exposes_actual_vector_backend(monkeypatch):
+    from backend import main as backend_main
+
+    def fake_get_vector_store():
+        return FakeVectorStore({"vector_backend": "unavailable", "native_available": False})
+
+    monkeypatch.setattr("backend.dependencies.get_vector_store", fake_get_vector_store)
+    client = TestClient(backend_main.app)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    storage = response.json()["storage"]
+    assert storage["actual_vector_backend"] == "unavailable"
+    assert storage["native_available"] is False

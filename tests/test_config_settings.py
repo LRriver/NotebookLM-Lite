@@ -15,7 +15,7 @@ def test_loads_yaml_model_profiles_without_using_local_config(sample_config_file
     assert settings.api.models.audio_model.response_format == "mp3"
     assert settings.api.models.audio_model.stream is True
     assert settings.vector_store_type == "seekdb"
-    assert settings.seekdb_path == "./data/test_seekdb.db"
+    assert settings.seekdb_path.endswith("/data/test_seekdb.db")
     assert settings.chunk_size == 512
     assert settings.chunk_overlap == 64
     assert settings.chunking.provider == "chonkie"

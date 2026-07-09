@@ -24,9 +24,12 @@ def _public_profile(profile: ModelProfile) -> PublicModelProfile:
     )
 
 
-def _response(message: str = "") -> RuntimeConfigResponse:
+async def _response(message: str = "") -> RuntimeConfigResponse:
     settings = get_settings()
     models = settings.api.models
+    vector_store = DependencyContainer.get_vector_store(settings=settings)
+    stats = await vector_store.get_stats()
+    storage_status = stats.get("storage", {})
     return RuntimeConfigResponse(
         models={
             name: _public_profile(getattr(models, name))
@@ -40,7 +43,11 @@ def _response(message: str = "") -> RuntimeConfigResponse:
         },
         storage={
             "vector_store_type": settings.vector_store_type,
+            "configured_vector_store_type": settings.vector_store_type,
             "seekdb_path": settings.seekdb_path,
+            "seekdb_allow_sqlite_fallback": settings.seekdb_allow_sqlite_fallback,
+            "actual_vector_backend": storage_status.get("vector_backend", stats.get("backend", "unknown")),
+            "native_available": storage_status.get("native_available", False),
         },
         message=message,
     )
@@ -48,7 +55,7 @@ def _response(message: str = "") -> RuntimeConfigResponse:
 
 @router.get("", response_model=RuntimeConfigResponse)
 async def get_runtime_config() -> RuntimeConfigResponse:
-    return _response()
+    return await _response()
 
 
 @router.post("", response_model=RuntimeConfigResponse)
@@ -59,4 +66,4 @@ async def update_runtime_config(request: RuntimeConfigUpdate) -> RuntimeConfigRe
     }
     update_runtime_model_profiles(profile_data)
     DependencyContainer.reset_runtime_caches()
-    return _response("Runtime model configuration updated.")
+    return await _response("Runtime model configuration updated.")

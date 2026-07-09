@@ -132,7 +132,19 @@ class SeekDBVectorStore(VectorStoreInterface):
             for chunk in chunks
         ]
 
+    def storage_status(self) -> dict[str, Any]:
+        repository_status = getattr(self.repository, "storage_status", None)
+        if callable(repository_status):
+            return repository_status()
+        return {"vector_backend": "unknown", "native_available": False}
+
     async def get_stats(self) -> dict[str, Any]:
         sources = await self.repository.list_sources()
         chunk_count = sum(source.chunk_count for source in sources)
-        return {"total_documents": len(sources), "total_chunks": chunk_count, "backend": "seekdb"}
+        status = self.storage_status()
+        return {
+            "total_documents": len(sources),
+            "total_chunks": chunk_count,
+            "backend": status.get("vector_backend", "unknown"),
+            "storage": status,
+        }
