@@ -53,6 +53,12 @@ class SeekDBChunkIndex:
         )
 
     def upsert_source_chunks(self, source_id: str, chunks: list[KnowledgeChunk]) -> None:
+        if not chunks:
+            collection = self._collection(source_id)
+            collection.delete(where={"source_id": source_id})
+            collection.refresh_index()
+            return
+
         dimension = self._first_embedding_dimension(chunks)
         embeddings: list[list[float]] = []
         metadatas: list[dict[str, Any]] = []
@@ -63,8 +69,8 @@ class SeekDBChunkIndex:
                 raise ValueError("All chunks must have same-dimension non-empty embeddings")
             embeddings.append(chunk.embedding)
             metadata = dict(chunk.metadata)
-            metadata.setdefault("source_id", chunk.source_id)
-            metadata.setdefault("chunk_index", chunk.chunk_index)
+            metadata["source_id"] = chunk.source_id
+            metadata["chunk_index"] = chunk.chunk_index
             metadata["payload"] = chunk.model_dump_json()
             metadatas.append(metadata)
 

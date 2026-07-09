@@ -116,14 +116,19 @@ def fake_pyseekdb(monkeypatch, request):
     yield
 
 
-def chunk(chunk_id: str, source_id: str, embedding: list[float]) -> KnowledgeChunk:
+def chunk(
+    chunk_id: str,
+    source_id: str,
+    embedding: list[float],
+    metadata: dict | None = None,
+) -> KnowledgeChunk:
     return KnowledgeChunk(
         id=chunk_id,
         source_id=source_id,
         content=f"{chunk_id} content",
         chunk_index=0,
         embedding=embedding,
-        metadata={"source_id": source_id},
+        metadata=metadata if metadata is not None else {"source_id": source_id},
     )
 
 
@@ -201,6 +206,57 @@ def test_upsert_source_chunks_replaces_existing_source_collection(tmp_path: Path
     assert [event["op"] for event in collection.events[-2:]] == ["delete", "upsert"]
 
 
+def test_upsert_source_chunks_overrides_conflicting_metadata_source_id_for_replacement(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks(
+        "source-a",
+        [
+            chunk(
+                "chunk-a",
+                "source-a",
+                [0.1, 0.2, 0.3],
+                metadata={"source_id": "wrong-source", "user_label": "kept"},
+            ),
+            chunk(
+                "chunk-b",
+                "source-a",
+                [0.3, 0.2, 0.1],
+                metadata={"source_id": "wrong-source"},
+            ),
+        ],
+    )
+
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    assert collection.upsert_calls[0]["metadatas"][0]["source_id"] == "source-a"
+    assert collection.upsert_calls[0]["metadatas"][0]["user_label"] == "kept"
+
+    index.upsert_source_chunks("source-a", [chunk("chunk-c", "source-a", [0.9, 0.1, 0.1])])
+    results = index.search(
+        query_embedding=[0.9, 0.1, 0.1],
+        source_ids=["source-a"],
+        top_k=10,
+    )
+
+    assert [item["chunk"].id for item in results] == ["chunk-c"]
+
+
+def test_upsert_source_chunks_empty_list_clears_existing_source_collection(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    index.upsert_source_chunks("source-a", [])
+    results = index.search(
+        query_embedding=[0.1, 0.2, 0.3],
+        source_ids=["source-a"],
+        top_k=10,
+    )
+
+    assert results == []
+    assert collection.delete_calls[-1]["where"] == {"source_id": "source-a"}
+    assert collection.refresh_calls == 2
+
+
 def test_upsert_source_chunks_rejects_mismatched_source_id(tmp_path: Path):
     index = SeekDBChunkIndex(tmp_path / "native.seekdb")
 
@@ -250,3 +306,54 @@ def test_real_pyseekdb_reindex_replaces_stale_chunks(tmp_path: Path, monkeypatch
     )
 
     assert [item["chunk"].id for item in results] == ["real-c"]
+
+
+def test_real_pyseekdb_conflicting_metadata_source_id_does_not_leave_stale_chunks(
+    tmp_path: Path,
+    monkeypatch,
+):
+    pyseekdb = pytest.importorskip("pyseekdb")
+    monkeypatch.setitem(sys.modules, "pyseekdb", pyseekdb)
+    index = SeekDBChunkIndex(tmp_path / "real.seekdb")
+
+    index.upsert_source_chunks(
+        "real-source",
+        [
+            chunk(
+                "real-a",
+                "real-source",
+                [0.1, 0.2, 0.3],
+                metadata={"source_id": "wrong-source"},
+            ),
+            chunk(
+                "real-b",
+                "real-source",
+                [0.3, 0.2, 0.1],
+                metadata={"source_id": "wrong-source"},
+            ),
+        ],
+    )
+    index.upsert_source_chunks("real-source", [chunk("real-c", "real-source", [0.9, 0.1, 0.1])])
+    results = index.search(
+        query_embedding=[0.9, 0.1, 0.1],
+        source_ids=["real-source"],
+        top_k=10,
+    )
+
+    assert [item["chunk"].id for item in results] == ["real-c"]
+
+
+def test_real_pyseekdb_empty_reindex_clears_existing_chunks(tmp_path: Path, monkeypatch):
+    pyseekdb = pytest.importorskip("pyseekdb")
+    monkeypatch.setitem(sys.modules, "pyseekdb", pyseekdb)
+    index = SeekDBChunkIndex(tmp_path / "real.seekdb")
+
+    index.upsert_source_chunks("real-source", [chunk("real-a", "real-source", [0.1, 0.2, 0.3])])
+    index.upsert_source_chunks("real-source", [])
+    results = index.search(
+        query_embedding=[0.1, 0.2, 0.3],
+        source_ids=["real-source"],
+        top_k=10,
+    )
+
+    assert results == []
