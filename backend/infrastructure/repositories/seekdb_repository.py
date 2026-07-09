@@ -242,6 +242,9 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         return True
 
     async def save_chunks(self, source_id: str, chunks: list[KnowledgeChunk]) -> None:
+        if self.native_chunk_index is None and chunks and not self.allow_sqlite_vector_fallback:
+            raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
+
         if self.native_chunk_index is not None and chunks and not self.allow_sqlite_vector_fallback:
             missing_embeddings = [chunk.id for chunk in chunks if not chunk.embedding]
             if missing_embeddings:
@@ -270,16 +273,13 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         )
         self._conn.commit()
 
-        has_vector_chunks = any(chunk.embedding is not None for chunk in chunks)
         if self.native_chunk_index is not None:
-            if chunks and has_vector_chunks:
+            has_all_embeddings = bool(chunks) and all(chunk.embedding is not None for chunk in chunks)
+            if has_all_embeddings:
                 self.native_chunk_index.upsert_source_chunks(source_id, chunks)
-            elif not chunks:
-                self.native_chunk_index.upsert_source_chunks(source_id, chunks)
+            else:
+                self.native_chunk_index.upsert_source_chunks(source_id, [])
             return
-
-        if chunks and not self.allow_sqlite_vector_fallback:
-            raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
 
     async def get_chunks(self, source_id: str) -> list[KnowledgeChunk]:
         rows = self._conn.execute(

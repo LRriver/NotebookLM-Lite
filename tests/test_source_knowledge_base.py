@@ -52,6 +52,36 @@ class RecordingNativeIndex:
         return {"vector_backend": "seekdb", "native_available": True}
 
 
+class StaleAwareNativeIndex(RecordingNativeIndex):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cleared_sources: set[str] = set()
+
+    def upsert_source_chunks(self, source_id, chunks):
+        super().upsert_source_chunks(source_id, chunks)
+        if chunks == []:
+            self.cleared_sources.add(source_id)
+
+    def search(self, query_embedding, source_ids, top_k):
+        self.searches.append((query_embedding, source_ids, top_k))
+        if source_ids[0] in self.cleared_sources:
+            return []
+        return [
+            {
+                "chunk": KnowledgeChunk(
+                    id="stale_native_chunk",
+                    source_id=source_ids[0],
+                    content="stale native search result",
+                    chunk_index=0,
+                    embedding=[0.1, 0.2, 0.3],
+                    metadata={"source_id": source_ids[0]},
+                ),
+                "score": 0.99,
+                "backend": "seekdb",
+            }
+        ]
+
+
 class DeterministicEmbeddingProvider:
     def __init__(self) -> None:
         self.calls = []
@@ -150,6 +180,7 @@ async def test_repository_requires_native_seekdb_for_vector_save_unless_fallback
                 )
             ],
         )
+    assert await repo.get_chunks(source.id) == []
 
 
 @pytest.mark.asyncio
@@ -230,6 +261,43 @@ async def test_repository_does_not_search_sqlite_bm25_without_explicit_fallback(
 
     with pytest.raises(RuntimeError, match="native SeekDB vector index is unavailable"):
         await repo.search_chunks("Needle", source_ids=[source.id], top_k=1)
+
+
+@pytest.mark.asyncio
+async def test_fallback_no_embedding_save_clears_native_chunks_and_uses_sqlite_search(tmp_path: Path):
+    native_index = StaleAwareNativeIndex()
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=True,
+    )
+    source = KnowledgeSource(id="src-fallback-clear", kind=SourceKind.TEXT, title="Fallback Clear")
+    await repo.save_source(source)
+
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-fallback-clear",
+                source_id=source.id,
+                content="Fresh fallback lexical content",
+                chunk_index=0,
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+
+    sqlite_results = await repo.search_chunks("Fresh fallback", source_ids=[source.id], top_k=1)
+    vector_results = await repo.search_chunks(
+        "stale native",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[0.1, 0.2, 0.3],
+    )
+
+    assert native_index.upserts == [(source.id, [])]
+    assert sqlite_results[0]["chunk"].id == "chunk-fallback-clear"
+    assert vector_results == []
 
 
 @pytest.mark.asyncio
