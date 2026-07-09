@@ -1,4 +1,7 @@
+import os
+import subprocess
 import sys
+import textwrap
 import types
 from pathlib import Path
 
@@ -257,6 +260,25 @@ def test_upsert_source_chunks_empty_list_clears_existing_source_collection(tmp_p
     assert collection.refresh_calls == 2
 
 
+def test_upsert_source_chunks_empty_list_missing_collection_is_noop(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+
+    index.upsert_source_chunks("source-a", [])
+
+    client = FakeClient.instances[0]
+    assert index.collection_name("source-a") not in client.collections
+
+
+def test_delete_source_chunks_missing_collection_is_noop(tmp_path: Path, caplog):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+
+    index.delete_source_chunks("source-a", ["chunk-a"])
+
+    client = FakeClient.instances[0]
+    assert index.collection_name("source-a") not in client.collections
+    assert not [record for record in caplog.records if record.levelname == "WARNING"]
+
+
 def test_upsert_source_chunks_rejects_mismatched_source_id(tmp_path: Path):
     index = SeekDBChunkIndex(tmp_path / "native.seekdb")
 
@@ -271,89 +293,134 @@ def test_missing_pyseekdb_raises_without_silent_sqlite_vector_fallback(tmp_path:
         SeekDBChunkIndex(tmp_path / "native.seekdb")
 
 
-def test_real_pyseekdb_upsert_refresh_and_query_round_trip(tmp_path: Path, monkeypatch):
-    pyseekdb = pytest.importorskip("pyseekdb")
-    monkeypatch.setitem(sys.modules, "pyseekdb", pyseekdb)
-    index = SeekDBChunkIndex(tmp_path / "real.seekdb")
+def run_real_pyseekdb_subprocess(script: str) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        value for value in [str(repo_root), env.get("PYTHONPATH", "")] if value
+    )
+    subprocess_script = textwrap.dedent(
+        """
+        try:
+            import pyseekdb  # noqa: F401
+        except Exception:
+            print("PYSEEKDB_UNAVAILABLE")
+            raise SystemExit(0)
 
-    index.upsert_source_chunks("real-source", [chunk("real-chunk", "real-source", [0.1, 0.2, 0.3])])
-    results = index.search(
-        query_embedding=[0.1, 0.2, 0.3],
-        source_ids=["real-source"],
-        top_k=1,
+        from backend.domain.source import KnowledgeChunk
+        from backend.infrastructure.vector_stores.seekdb_chunk_index import SeekDBChunkIndex
+
+
+        def chunk(chunk_id: str, source_id: str, embedding: list[float], metadata: dict | None = None):
+            return KnowledgeChunk(
+                id=chunk_id,
+                source_id=source_id,
+                content=f"{chunk_id} content",
+                chunk_index=0,
+                embedding=embedding,
+                metadata=metadata if metadata is not None else {"source_id": source_id},
+            )
+        """
+    ) + "\n" + textwrap.dedent(script)
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", subprocess_script],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip("real pyseekdb subprocess timed out after 60 seconds")
+    if "PYSEEKDB_UNAVAILABLE" in completed.stdout:
+        pytest.skip("pyseekdb is unavailable in subprocess")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_real_pyseekdb_upsert_refresh_and_query_round_trip(tmp_path: Path):
+    run_real_pyseekdb_subprocess(
+        f"""
+        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
+        index.upsert_source_chunks("real-source", [chunk("real-chunk", "real-source", [0.1, 0.2, 0.3])])
+        results = index.search(
+            query_embedding=[0.1, 0.2, 0.3],
+            source_ids=["real-source"],
+            top_k=1,
+        )
+        assert results[0]["chunk"].id == "real-chunk"
+        """
     )
 
-    assert results[0]["chunk"].id == "real-chunk"
 
-
-def test_real_pyseekdb_reindex_replaces_stale_chunks(tmp_path: Path, monkeypatch):
-    pyseekdb = pytest.importorskip("pyseekdb")
-    monkeypatch.setitem(sys.modules, "pyseekdb", pyseekdb)
-    index = SeekDBChunkIndex(tmp_path / "real.seekdb")
-
-    index.upsert_source_chunks(
-        "real-source",
-        [
-            chunk("real-a", "real-source", [0.1, 0.2, 0.3]),
-            chunk("real-b", "real-source", [0.3, 0.2, 0.1]),
-        ],
+def test_real_pyseekdb_reindex_replaces_stale_chunks(tmp_path: Path):
+    run_real_pyseekdb_subprocess(
+        f"""
+        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
+        index.upsert_source_chunks(
+            "real-source",
+            [
+                chunk("real-a", "real-source", [0.1, 0.2, 0.3]),
+                chunk("real-b", "real-source", [0.3, 0.2, 0.1]),
+            ],
+        )
+        index.upsert_source_chunks("real-source", [chunk("real-c", "real-source", [0.9, 0.1, 0.1])])
+        results = index.search(
+            query_embedding=[0.9, 0.1, 0.1],
+            source_ids=["real-source"],
+            top_k=10,
+        )
+        assert [item["chunk"].id for item in results] == ["real-c"]
+        """
     )
-    index.upsert_source_chunks("real-source", [chunk("real-c", "real-source", [0.9, 0.1, 0.1])])
-    results = index.search(
-        query_embedding=[0.9, 0.1, 0.1],
-        source_ids=["real-source"],
-        top_k=10,
-    )
-
-    assert [item["chunk"].id for item in results] == ["real-c"]
 
 
 def test_real_pyseekdb_conflicting_metadata_source_id_does_not_leave_stale_chunks(
     tmp_path: Path,
-    monkeypatch,
 ):
-    pyseekdb = pytest.importorskip("pyseekdb")
-    monkeypatch.setitem(sys.modules, "pyseekdb", pyseekdb)
-    index = SeekDBChunkIndex(tmp_path / "real.seekdb")
-
-    index.upsert_source_chunks(
-        "real-source",
-        [
-            chunk(
-                "real-a",
-                "real-source",
-                [0.1, 0.2, 0.3],
-                metadata={"source_id": "wrong-source"},
-            ),
-            chunk(
-                "real-b",
-                "real-source",
-                [0.3, 0.2, 0.1],
-                metadata={"source_id": "wrong-source"},
-            ),
-        ],
-    )
-    index.upsert_source_chunks("real-source", [chunk("real-c", "real-source", [0.9, 0.1, 0.1])])
-    results = index.search(
-        query_embedding=[0.9, 0.1, 0.1],
-        source_ids=["real-source"],
-        top_k=10,
-    )
-
-    assert [item["chunk"].id for item in results] == ["real-c"]
-
-
-def test_real_pyseekdb_empty_reindex_clears_existing_chunks(tmp_path: Path, monkeypatch):
-    pyseekdb = pytest.importorskip("pyseekdb")
-    monkeypatch.setitem(sys.modules, "pyseekdb", pyseekdb)
-    index = SeekDBChunkIndex(tmp_path / "real.seekdb")
-
-    index.upsert_source_chunks("real-source", [chunk("real-a", "real-source", [0.1, 0.2, 0.3])])
-    index.upsert_source_chunks("real-source", [])
-    results = index.search(
-        query_embedding=[0.1, 0.2, 0.3],
-        source_ids=["real-source"],
-        top_k=10,
+    run_real_pyseekdb_subprocess(
+        f"""
+        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
+        index.upsert_source_chunks(
+            "real-source",
+            [
+                chunk(
+                    "real-a",
+                    "real-source",
+                    [0.1, 0.2, 0.3],
+                    metadata={{"source_id": "wrong-source"}},
+                ),
+                chunk(
+                    "real-b",
+                    "real-source",
+                    [0.3, 0.2, 0.1],
+                    metadata={{"source_id": "wrong-source"}},
+                ),
+            ],
+        )
+        index.upsert_source_chunks("real-source", [chunk("real-c", "real-source", [0.9, 0.1, 0.1])])
+        results = index.search(
+            query_embedding=[0.9, 0.1, 0.1],
+            source_ids=["real-source"],
+            top_k=10,
+        )
+        assert [item["chunk"].id for item in results] == ["real-c"]
+        """
     )
 
-    assert results == []
+
+def test_real_pyseekdb_empty_reindex_clears_existing_chunks(tmp_path: Path):
+    run_real_pyseekdb_subprocess(
+        f"""
+        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
+        index.upsert_source_chunks("real-source", [chunk("real-a", "real-source", [0.1, 0.2, 0.3])])
+        index.upsert_source_chunks("real-source", [])
+        results = index.search(
+            query_embedding=[0.1, 0.2, 0.3],
+            source_ids=["real-source"],
+            top_k=10,
+        )
+        assert results == []
+        """
+    )

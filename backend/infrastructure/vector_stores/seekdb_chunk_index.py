@@ -52,9 +52,32 @@ class SeekDBChunkIndex:
             embedding_function=None,
         )
 
+    def _existing_collection(self, source_id: str) -> Any | None:
+        try:
+            return self._collection(source_id)
+        except Exception as exc:
+            if self._is_missing_collection_error(exc):
+                return None
+            raise
+
+    @staticmethod
+    def _is_missing_collection_error(exc: Exception) -> bool:
+        if isinstance(exc, KeyError):
+            return True
+        message = str(exc).lower()
+        missing_markers = (
+            "not found",
+            "not exist",
+            "doesn't exist",
+            "failed to resolve collection metadata",
+        )
+        return "collection" in message and any(marker in message for marker in missing_markers)
+
     def upsert_source_chunks(self, source_id: str, chunks: list[KnowledgeChunk]) -> None:
         if not chunks:
-            collection = self._collection(source_id)
+            collection = self._existing_collection(source_id)
+            if collection is None:
+                return
             collection.delete(where={"source_id": source_id})
             collection.refresh_index()
             return
@@ -88,7 +111,9 @@ class SeekDBChunkIndex:
         if not chunk_ids:
             return
         try:
-            collection = self._collection(source_id)
+            collection = self._existing_collection(source_id)
+            if collection is None:
+                return
             collection.delete(ids=chunk_ids)
             collection.refresh_index()
         except Exception as exc:
