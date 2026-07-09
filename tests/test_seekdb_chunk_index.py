@@ -24,10 +24,12 @@ class FakeCollection:
         self.upsert_calls = []
         self.delete_calls = []
         self.query_calls = []
+        self.events = []
         self.refresh_calls = 0
         self.rows = {}
 
     def upsert(self, ids, documents, metadatas, embeddings):
+        self.events.append({"op": "upsert", "ids": ids})
         self.upsert_calls.append(
             {
                 "ids": ids,
@@ -44,10 +46,16 @@ class FakeCollection:
             }
 
     def delete(self, ids=None, **kwargs):
+        self.events.append({"op": "delete", "ids": ids, **kwargs})
         self.delete_calls.append({"ids": ids, **kwargs})
         if ids:
             for chunk_id in ids:
                 self.rows.pop(chunk_id, None)
+        where = kwargs.get("where")
+        if where:
+            for chunk_id, row in list(self.rows.items()):
+                if all(row["metadata"].get(key) == value for key, value in where.items()):
+                    self.rows.pop(chunk_id, None)
 
     def query(self, query_embeddings, n_results, include):
         self.query_calls.append(
@@ -99,7 +107,7 @@ class FakeClient:
 
 @pytest.fixture(autouse=True)
 def fake_pyseekdb(monkeypatch, request):
-    if request.node.name == "test_real_pyseekdb_upsert_refresh_and_query_round_trip":
+    if request.node.name.startswith("test_real_pyseekdb"):
         yield
         return
     FakeClient.instances.clear()
@@ -148,8 +156,56 @@ def test_search_queries_seekdb_collections_and_reconstructs_chunks(tmp_path: Pat
     assert [item["chunk"].id for item in results] == ["chunk-a", "chunk-b"]
     assert all(item["backend"] == "seekdb" for item in results)
     client = FakeClient.instances[0]
-    assert client.collections[index.collection_name("source-a")].query_calls
-    assert client.collections[index.collection_name("source-b")].query_calls
+    source_a_query = client.collections[index.collection_name("source-a")].query_calls[0]
+    source_b_query = client.collections[index.collection_name("source-b")].query_calls[0]
+    assert source_a_query["query_embeddings"] == [[0.1, 0.2, 0.3]]
+    assert source_a_query["n_results"] == 2
+    assert source_a_query["include"] == ["documents", "metadatas", "distances"]
+    assert source_b_query["query_embeddings"] == [[0.1, 0.2, 0.3]]
+    assert source_b_query["n_results"] == 2
+    assert source_b_query["include"] == ["documents", "metadatas", "distances"]
+
+
+def test_delete_source_chunks_refreshes_collection_after_successful_delete(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    index.delete_source_chunks("source-a", ["chunk-a"])
+
+    assert collection.delete_calls[-1]["ids"] == ["chunk-a"]
+    assert collection.rows == {}
+    assert collection.refresh_calls == 2
+
+
+def test_upsert_source_chunks_replaces_existing_source_collection(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks(
+        "source-a",
+        [
+            chunk("chunk-a", "source-a", [0.1, 0.2, 0.3]),
+            chunk("chunk-b", "source-a", [0.3, 0.2, 0.1]),
+        ],
+    )
+
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    index.upsert_source_chunks("source-a", [chunk("chunk-c", "source-a", [0.9, 0.1, 0.1])])
+    results = index.search(
+        query_embedding=[0.9, 0.1, 0.1],
+        source_ids=["source-a"],
+        top_k=10,
+    )
+
+    assert [item["chunk"].id for item in results] == ["chunk-c"]
+    assert collection.delete_calls[-1]["where"] == {"source_id": "source-a"}
+    assert [event["op"] for event in collection.events[-2:]] == ["delete", "upsert"]
+
+
+def test_upsert_source_chunks_rejects_mismatched_source_id(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+
+    with pytest.raises(ValueError, match="source_id"):
+        index.upsert_source_chunks("source-a", [chunk("chunk-b", "source-b", [0.1, 0.2, 0.3])])
 
 
 def test_missing_pyseekdb_raises_without_silent_sqlite_vector_fallback(tmp_path: Path, monkeypatch):
@@ -172,3 +228,25 @@ def test_real_pyseekdb_upsert_refresh_and_query_round_trip(tmp_path: Path, monke
     )
 
     assert results[0]["chunk"].id == "real-chunk"
+
+
+def test_real_pyseekdb_reindex_replaces_stale_chunks(tmp_path: Path, monkeypatch):
+    pyseekdb = pytest.importorskip("pyseekdb")
+    monkeypatch.setitem(sys.modules, "pyseekdb", pyseekdb)
+    index = SeekDBChunkIndex(tmp_path / "real.seekdb")
+
+    index.upsert_source_chunks(
+        "real-source",
+        [
+            chunk("real-a", "real-source", [0.1, 0.2, 0.3]),
+            chunk("real-b", "real-source", [0.3, 0.2, 0.1]),
+        ],
+    )
+    index.upsert_source_chunks("real-source", [chunk("real-c", "real-source", [0.9, 0.1, 0.1])])
+    results = index.search(
+        query_embedding=[0.9, 0.1, 0.1],
+        source_ids=["real-source"],
+        top_k=10,
+    )
+
+    assert [item["chunk"].id for item in results] == ["real-c"]

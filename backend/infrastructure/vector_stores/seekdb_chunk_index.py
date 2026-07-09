@@ -57,6 +57,8 @@ class SeekDBChunkIndex:
         embeddings: list[list[float]] = []
         metadatas: list[dict[str, Any]] = []
         for chunk in chunks:
+            if chunk.source_id != source_id:
+                raise ValueError("chunk.source_id must match source_id")
             if not chunk.embedding or len(chunk.embedding) != dimension:
                 raise ValueError("All chunks must have same-dimension non-empty embeddings")
             embeddings.append(chunk.embedding)
@@ -67,6 +69,7 @@ class SeekDBChunkIndex:
             metadatas.append(metadata)
 
         collection = self._collection(source_id, dimension=dimension)
+        collection.delete(where={"source_id": source_id})
         collection.upsert(
             ids=[chunk.id for chunk in chunks],
             documents=[chunk.content for chunk in chunks],
@@ -81,6 +84,7 @@ class SeekDBChunkIndex:
         try:
             collection = self._collection(source_id)
             collection.delete(ids=chunk_ids)
+            collection.refresh_index()
         except Exception as exc:
             logger.warning("Failed to delete SeekDB chunks for source %s: %s", source_id, exc)
 
