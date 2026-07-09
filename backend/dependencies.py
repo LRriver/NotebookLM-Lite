@@ -26,6 +26,7 @@ class DependencyContainer:
         """Drop cached services that depend on model settings."""
 
         cls._vector_store = None
+        cls._knowledge_repository = None
         cls._slide_deck_service = None
     
     @classmethod

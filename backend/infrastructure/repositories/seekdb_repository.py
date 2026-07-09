@@ -242,6 +242,14 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         return True
 
     async def save_chunks(self, source_id: str, chunks: list[KnowledgeChunk]) -> None:
+        if self.native_chunk_index is not None and chunks and not self.allow_sqlite_vector_fallback:
+            missing_embeddings = [chunk.id for chunk in chunks if not chunk.embedding]
+            if missing_embeddings:
+                raise RuntimeError(
+                    "native SeekDB chunk writes require embeddings for all chunks; "
+                    f"missing embeddings for: {', '.join(missing_embeddings)}"
+                )
+
         self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
         self._conn.executemany(
             """

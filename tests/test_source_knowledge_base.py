@@ -52,6 +52,17 @@ class RecordingNativeIndex:
         return {"vector_backend": "seekdb", "native_available": True}
 
 
+class DeterministicEmbeddingProvider:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def embed(self, content):
+        self.calls.append(content)
+        if isinstance(content, str):
+            return [0.1, 0.2, 0.3]
+        return [[0.1, 0.2, 0.3] for _ in content]
+
+
 @pytest.mark.asyncio
 async def test_repository_uses_seekdb_native_index_for_chunk_save_and_search(tmp_path: Path, caplog):
     native_index = RecordingNativeIndex()
@@ -88,6 +99,31 @@ async def test_repository_uses_seekdb_native_index_for_chunk_save_and_search(tmp
     assert native_index.searches == [([0.1, 0.2, 0.3], [source.id], 1)]
     assert results[0]["chunk"].id == "native_chunk"
     assert "Skipping optional pyseekdb chunk mirror" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_repository_requires_embeddings_when_native_seekdb_is_primary(tmp_path: Path):
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=RecordingNativeIndex(),
+        allow_sqlite_vector_fallback=False,
+    )
+    source = KnowledgeSource(id="src-native-no-embedding", kind=SourceKind.TEXT, title="Native No Embedding")
+    await repo.save_source(source)
+
+    with pytest.raises((RuntimeError, ValueError), match="embedding|native SeekDB"):
+        await repo.save_chunks(
+            source.id,
+            [
+                KnowledgeChunk(
+                    id="chunk-native-no-embedding",
+                    source_id=source.id,
+                    content="native primary requires an embedding",
+                    chunk_index=0,
+                    metadata={"source_id": source.id},
+                )
+            ],
+        )
 
 
 @pytest.mark.asyncio
@@ -159,6 +195,7 @@ async def test_repository_requires_query_embedding_when_native_seekdb_is_primary
                 source_id=source.id,
                 content="native query content",
                 chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
                 metadata={"source_id": source.id},
             )
         ],
@@ -193,6 +230,36 @@ async def test_repository_does_not_search_sqlite_bm25_without_explicit_fallback(
 
     with pytest.raises(RuntimeError, match="native SeekDB vector index is unavailable"):
         await repo.search_chunks("Needle", source_ids=[source.id], top_k=1)
+
+
+@pytest.mark.asyncio
+async def test_source_service_ingestion_and_vector_store_search_use_native_seekdb(tmp_path: Path):
+    native_index = RecordingNativeIndex()
+    embedding_provider = DeterministicEmbeddingProvider()
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+    service = SourceService(
+        repository=repo,
+        parser=DoclingParser(),
+        embedding_provider=embedding_provider,
+        chunk_size=128,
+        chunk_overlap=0,
+    )
+
+    source = await service.create_text_source("Native E2E", "Alpha native retrieval content.")
+    from backend.infrastructure.vector_stores.seekdb_vector_store import SeekDBVectorStore
+
+    store = SeekDBVectorStore(repo, embedding_provider=embedding_provider)
+    results = await store.search("Alpha native", top_k=1, doc_ids=[source.id])
+
+    assert source.status == "ready"
+    assert native_index.upserts[0][0] == source.id
+    assert all(chunk.embedding == [0.1, 0.2, 0.3] for chunk in native_index.upserts[0][1])
+    assert native_index.searches == [([0.1, 0.2, 0.3], [source.id], 1)]
+    assert results[0]["id"] == "native_chunk"
 
 
 @pytest.mark.asyncio
