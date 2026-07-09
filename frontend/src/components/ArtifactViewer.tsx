@@ -4,12 +4,97 @@ import { useLanguage, type GeneratedContent } from '../App';
 import { MarkdownView } from './MarkdownView';
 
 type AnyRecord = Record<string, any>;
+type MindLayoutNode = {
+    id: string;
+    label: string;
+    childCount: number;
+    depth: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+};
+
+type MindLayoutLink = {
+    from: MindLayoutNode;
+    to: MindLayoutNode;
+};
 
 interface ArtifactViewerProps {
     content: GeneratedContent;
 }
 
 const textValue = (value: unknown) => value === undefined || value === null ? '' : String(value);
+
+const mindNodeId = (node: AnyRecord, path: string) => `${path}:${textValue(node.id || node.label || 'node')}`;
+
+const collectExpandableMindIds = (node: AnyRecord, path = 'root'): string[] => {
+    const children = Array.isArray(node.children) ? node.children : [];
+    const id = mindNodeId(node, path);
+    return [
+        ...(children.length ? [id] : []),
+        ...children.flatMap((child: AnyRecord, index: number) => collectExpandableMindIds(child, `${path}-${index}`))
+    ];
+};
+
+const mindNodeWidth = (label: string, depth: number) => {
+    const base = depth === 0 ? 165 : depth === 1 ? 160 : 130;
+    const max = depth === 0 ? 220 : 200;
+    return Math.max(base, Math.min(max, label.length * 7 + 46));
+};
+
+const layoutMindMap = (root: AnyRecord, expandedIds: Set<string>) => {
+    const nodes: MindLayoutNode[] = [];
+    const links: MindLayoutLink[] = [];
+    let nextLeafY = 28;
+
+    const visit = (node: AnyRecord, depth: number, path: string): MindLayoutNode => {
+        const children = Array.isArray(node.children) ? node.children : [];
+        const id = mindNodeId(node, path);
+        const label = textValue(node.label || node.title || 'Untitled');
+        const width = mindNodeWidth(label, depth);
+        const height = 42;
+        const visibleChildren = expandedIds.has(id)
+            ? children.map((child: AnyRecord, index: number) => visit(child, depth + 1, `${path}-${index}`))
+            : [];
+        const y = visibleChildren.length
+            ? visibleChildren.reduce((total, child) => total + child.y, 0) / visibleChildren.length
+            : nextLeafY;
+        if (!visibleChildren.length) {
+            nextLeafY += height + 28;
+        }
+        const layoutNode = {
+            id,
+            label,
+            childCount: children.length,
+            depth,
+            x: 28,
+            y,
+            width,
+            height
+        };
+        nodes.push(layoutNode);
+        visibleChildren.forEach(child => links.push({ from: layoutNode, to: child }));
+        return layoutNode;
+    };
+
+    visit(root, 0, 'root');
+    const columnWidths = nodes.reduce<number[]>((widths, node) => {
+        widths[node.depth] = Math.max(widths[node.depth] || 0, node.width);
+        return widths;
+    }, []);
+    const columnGap = 18;
+    const columnX = columnWidths.reduce<number[]>((positions, width, depth) => {
+        positions[depth] = depth === 0 ? 28 : positions[depth - 1] + columnWidths[depth - 1] + columnGap;
+        return positions;
+    }, []);
+    nodes.forEach(node => {
+        node.x = columnX[node.depth] || 28;
+    });
+    const width = Math.max(620, ...nodes.map(node => node.x + node.width + 48));
+    const height = Math.max(360, ...nodes.map(node => node.y + node.height + 36));
+    return { nodes, links, width, height };
+};
 
 const FAQViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = ({ payload, markdown }) => {
     const items = Array.isArray(payload.items) ? payload.items : [];
@@ -174,32 +259,80 @@ const InfographicViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = (
     );
 };
 
-const MindMapNode: React.FC<{ node: AnyRecord; depth?: number }> = ({ node, depth = 0 }) => {
-    const children = Array.isArray(node.children) ? node.children : [];
-    const [expanded, setExpanded] = useState(depth === 0);
-    return (
-        <div className="mind-node" style={{ ['--depth' as string]: depth }}>
-            <button className="mind-node-button" onClick={() => setExpanded(value => !value)}>
-                <span className="mind-node-dot" />
-                <span>{textValue(node.label)}</span>
-                {children.length > 0 && <span className="mind-node-count">{children.length}</span>}
-            </button>
-            {expanded && children.length > 0 && (
-                <div className="mind-node-children">
-                    {children.map((child: AnyRecord, index: number) => <MindMapNode key={child.id || index} node={child} depth={depth + 1} />)}
-                </div>
-            )}
-        </div>
-    );
-};
-
 const MindMapViewer: React.FC<{ payload: AnyRecord; markdown?: string }> = ({ payload, markdown }) => {
-    if (!payload.root) {
+    const root = payload.root;
+    const expandableIds = useMemo(() => root ? collectExpandableMindIds(root) : [], [root]);
+    const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set(expandableIds));
+    useEffect(() => {
+        setExpandedIds(new Set(expandableIds));
+    }, [expandableIds]);
+    const layout = useMemo(() => root ? layoutMindMap(root, expandedIds) : null, [root, expandedIds]);
+    const toggleNode = (node: MindLayoutNode) => {
+        if (!node.childCount) return;
+        setExpandedIds(current => {
+            const next = new Set(current);
+            if (next.has(node.id)) next.delete(node.id);
+            else next.add(node.id);
+            return next;
+        });
+    };
+    if (!root || !layout) {
         return <MarkdownView content={markdown || ''} className="artifact-preview" />;
     }
+    const renderNodes = [...layout.nodes].sort((left, right) => left.depth - right.depth || left.y - right.y || left.x - right.x);
+
     return (
-        <div className="mind-map-viewer">
-            <MindMapNode node={payload.root} />
+        <div className="mind-map-viewer" role="region" aria-label={textValue(payload.title || 'Mind map')}>
+            <div className="mind-map-canvas" style={{ width: layout.width, height: layout.height }}>
+                <svg className="mind-map-links" width={layout.width} height={layout.height} aria-hidden="true">
+                    {layout.links.map(link => {
+                        const x1 = link.from.x + link.from.width;
+                        const y1 = link.from.y + link.from.height / 2;
+                        const x2 = link.to.x;
+                        const y2 = link.to.y + link.to.height / 2;
+                        const curve = Math.max(48, (x2 - x1) * 0.55);
+                        return (
+                            <path
+                                key={`${link.from.id}-${link.to.id}`}
+                                className={`mind-map-link depth-${Math.min(link.from.depth, 4)}`}
+                                d={`M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}`}
+                            />
+                        );
+                    })}
+                </svg>
+                {renderNodes.map(node => {
+                    const nodeClassName = `mind-graph-node depth-${Math.min(node.depth, 4)} ${node.childCount ? 'has-children' : 'leaf'}`;
+                    const nodeStyle = { left: node.x, top: node.y, width: node.width, minHeight: node.height };
+                    const nodeContent = (
+                        <>
+                            <span className="mind-graph-label">{node.label}</span>
+                            {node.childCount > 0 && (
+                                <span className="mind-graph-count">{expandedIds.has(node.id) ? '−' : '+'}{node.childCount}</span>
+                            )}
+                        </>
+                    );
+                    if (!node.childCount) {
+                        return (
+                            <div key={node.id} className={nodeClassName} style={nodeStyle}>
+                                {nodeContent}
+                            </div>
+                        );
+                    }
+                    return (
+                        <button
+                            key={node.id}
+                            type="button"
+                            className={nodeClassName}
+                            style={nodeStyle}
+                            onClick={() => toggleNode(node)}
+                            aria-label={`${node.label} ${node.childCount}`}
+                            aria-expanded={expandedIds.has(node.id)}
+                        >
+                            {nodeContent}
+                        </button>
+                    );
+                })}
+            </div>
         </div>
     );
 };

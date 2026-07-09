@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { BarChart3, ChevronDown, ChevronUp, Download, FileQuestion, Film, Headphones, Image, Loader2, Network, Presentation, Rows3, SquareStack } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, BarChart3, Download, FileQuestion, Film, Headphones, Image, Loader2, MoreVertical, Network, Presentation, Rows3, SquareStack } from 'lucide-react';
 import type { ApiConfig, GeneratedContent } from '../App';
 import { translations, useLanguage } from '../App';
 import { ArtifactViewer } from './ArtifactViewer';
@@ -10,6 +10,7 @@ interface StudioPanelProps {
     contents: GeneratedContent[];
     onContentGenerated: (content: GeneratedContent) => void;
     onOpenSlideDeck: (deckId: string | null) => void;
+    onDetailModeChange?: (active: boolean) => void;
 }
 
 const TOOLS = [
@@ -24,7 +25,27 @@ const TOOLS = [
     { id: 'infographic', icon: Image, labelKey: 'infographic', styleClass: 'tool-infographic' }
 ];
 
-export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, contents, onContentGenerated, onOpenSlideDeck }) => {
+const TYPE_LABELS: Record<string, { zh: string; en: string }> = {
+    podcast_script: { zh: '播客', en: 'Podcast' },
+    mind_map: { zh: '思维导图', en: 'Mind Map' },
+    faq: { zh: 'FAQ', en: 'FAQ' },
+    flashcards: { zh: '卡片', en: 'Flashcards' },
+    quiz: { zh: '测验', en: 'Quiz' },
+    report: { zh: '报告', en: 'Report' },
+    study_guide: { zh: '学习指南', en: 'Study Guide' },
+    data_table: { zh: '数据表', en: 'Data Table' },
+    infographic: { zh: '信息图', en: 'Infographic' },
+    video_overview: { zh: '视频概览', en: 'Video Overview' },
+    ppt_outline: { zh: 'PPT', en: 'PPT' },
+    slide_deck: { zh: 'PPT', en: 'Slide Deck' }
+};
+
+const toolForType = (type: string) => {
+    if (type === 'podcast_script') return TOOLS[0];
+    return TOOLS.find(tool => tool.id === type) || TOOLS.find(tool => tool.id === 'report')!;
+};
+
+export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, contents, onContentGenerated, onOpenSlideDeck, onDetailModeChange }) => {
     const { lang } = useLanguage();
     const t = translations[lang];
     const [activeTool, setActiveTool] = useState<string>('podcast');
@@ -36,7 +57,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, con
     const [detail, setDetail] = useState('standard');
     const [customPrompt, setCustomPrompt] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
-    const [expandedId, setExpandedId] = useState<string | null>(null);
+    const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
+    const selectedContent = useMemo(
+        () => contents.find(content => content.id === selectedContentId) || null,
+        [contents, selectedContentId]
+    );
+    useEffect(() => {
+        onDetailModeChange?.(Boolean(selectedContent));
+        return () => onDetailModeChange?.(false);
+    }, [onDetailModeChange, selectedContent]);
 
     const selectTool = (toolId: string) => {
         if (toolId === 'ppt_outline') {
@@ -78,6 +107,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, con
                     type: 'podcast_script',
                     title: data.title || (lang === 'zh' ? '播客脚本' : 'Podcast Script'),
                     createdAt: new Date(),
+                    sourceIds,
                     audioUrl: data.audio_url,
                     transcriptUrl: data.transcript_url,
                     audioFilename: data.audio_filename,
@@ -129,6 +159,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, con
                     type: artifact.artifact_type,
                     title: artifact.title,
                     createdAt: new Date(artifact.created_at),
+                    sourceIds: artifact.source_ids || sourceIds,
                     markdown: artifact.markdown,
                     payload: artifact.payload,
                     downloadJsonUrl: `/api/artifacts/${artifact.id}/download?format=json`,
@@ -161,6 +192,49 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, con
             customPrompt.trim() ? `custom_prompt: ${customPrompt.trim()}` : ''
         ].filter(Boolean).join('\n');
     };
+
+    const contentSourceCount = (content: GeneratedContent) => content.sourceIds === undefined ? sourceIds.length : content.sourceIds.length;
+    const typeLabel = (type: string) => TYPE_LABELS[type]?.[lang] || type;
+    const renderDownloads = (content: GeneratedContent) => (
+        <div className="artifact-downloads">
+            {content.downloadMarkdownUrl && <a className="secondary-btn" href={content.downloadMarkdownUrl}><Download size={14} /> Markdown</a>}
+            {content.downloadJsonUrl && <a className="secondary-btn" href={content.downloadJsonUrl}><Download size={14} /> JSON</a>}
+            {content.downloadSvgUrl && <a className="secondary-btn" href={content.downloadSvgUrl}><Download size={14} /> SVG</a>}
+            {content.audioUrl && <a className="secondary-btn" href={content.audioUrl}><Download size={14} /> MP3</a>}
+            {content.transcriptUrl && <a className="secondary-btn" href={content.transcriptUrl}><Download size={14} /> {lang === 'zh' ? '转录文本' : 'Transcript'}</a>}
+        </div>
+    );
+
+    if (selectedContent) {
+        return (
+            <>
+                <div className="panel-header studio-detail-header">
+                    <button className="studio-back-btn" onClick={() => setSelectedContentId(null)}>
+                        <ArrowLeft size={17} />
+                        {t.studio}
+                    </button>
+                    <span className="studio-detail-crumb">{typeLabel(selectedContent.type)}</span>
+                </div>
+                <div className="panel-body studio-detail-pane">
+                    <div className="artifact-detail-title">
+                        <div>
+                            <p>{typeLabel(selectedContent.type)}</p>
+                            <div className="artifact-detail-name">{selectedContent.title}</div>
+                            <span>
+                                {contentSourceCount(selectedContent)} {lang === 'zh' ? '个来源' : contentSourceCount(selectedContent) === 1 ? 'source' : 'sources'}
+                            </span>
+                        </div>
+                        <span className="artifact-detail-more" aria-hidden="true">
+                            <MoreVertical size={18} />
+                        </span>
+                    </div>
+                    {selectedContent.audioUrl && <audio controls src={selectedContent.audioUrl} className="w-full mb-3" />}
+                    <ArtifactViewer content={selectedContent} />
+                    {renderDownloads(selectedContent)}
+                </div>
+            </>
+        );
+    }
 
     return (
         <>
@@ -247,39 +321,34 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({ sourceIds, config, con
                         <p className="text-sm text-gray-400">{t.noContent}</p>
                     </div>
                 )}
-                {contents.map(content => (
-                    <div key={content.id} className="artifact-card">
-                        <button
-                            className="artifact-head"
-                            onClick={() => {
-                                if (content.type === 'slide_deck' && typeof content.payload?.deck_id === 'string') {
-                                    onOpenSlideDeck(content.payload.deck_id);
-                                    return;
-                                }
-                                setExpandedId(expandedId === content.id ? null : content.id);
-                            }}
-                        >
-                            <div>
-                                <div className="text-sm font-semibold text-gray-800">{content.title}</div>
-                                <div className="text-[11px] text-gray-500">{content.type}</div>
-                            </div>
-                            {expandedId === content.id ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
-                        </button>
-                        {expandedId === content.id && (
-                            <div className="artifact-body">
-                                {content.audioUrl && <audio controls src={content.audioUrl} className="w-full mb-3" />}
-                                <ArtifactViewer content={content} />
-                                <div className="flex flex-wrap gap-2 mt-3">
-                                    {content.downloadMarkdownUrl && <a className="secondary-btn" href={content.downloadMarkdownUrl}><Download size={14} /> Markdown</a>}
-                                    {content.downloadJsonUrl && <a className="secondary-btn" href={content.downloadJsonUrl}><Download size={14} /> JSON</a>}
-                                    {content.downloadSvgUrl && <a className="secondary-btn" href={content.downloadSvgUrl}><Download size={14} /> SVG</a>}
-                                    {content.audioUrl && <a className="secondary-btn" href={content.audioUrl}><Download size={14} /> MP3</a>}
-                                    {content.transcriptUrl && <a className="secondary-btn" href={content.transcriptUrl}><Download size={14} /> {lang === 'zh' ? '转录文本' : 'Transcript'}</a>}
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                ))}
+                <div className="artifact-list">
+                    {contents.map(content => {
+                        const tool = toolForType(content.type);
+                        const Icon = tool.icon;
+                        return (
+                            <button
+                                key={content.id}
+                                className="artifact-list-item"
+                                onClick={() => {
+                                    if (content.type === 'slide_deck' && typeof content.payload?.deck_id === 'string') {
+                                        onOpenSlideDeck(content.payload.deck_id);
+                                        return;
+                                    }
+                                    setSelectedContentId(content.id);
+                                }}
+                            >
+                                <span className={`artifact-list-icon ${tool.styleClass}`}><Icon size={22} /></span>
+                                <span className="artifact-list-text">
+                                    <strong>{content.title}</strong>
+                                    <small>
+                                        {contentSourceCount(content)} {lang === 'zh' ? '个来源' : contentSourceCount(content) === 1 ? 'source' : 'sources'} · {typeLabel(content.type)}
+                                    </small>
+                                </span>
+                                <MoreVertical size={18} className="artifact-list-more" />
+                            </button>
+                        );
+                    })}
+                </div>
             </div>
         </>
     );

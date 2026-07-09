@@ -288,6 +288,7 @@ describe('Markdown rendering', () => {
                 type: 'report',
                 title: 'Generated Artifact',
                 createdAt: new Date('2026-06-01T00:00:00Z'),
+                sourceIds: [],
                 markdown: '## Rendered Report\n\n| 项目 | 说明 |\n| --- | --- |\n| HTTP | 明文传输 |',
                 downloadMarkdownUrl: '/download.md',
                 downloadJsonUrl: '/download.json'
@@ -304,11 +305,20 @@ describe('Markdown rendering', () => {
             />
         );
 
-        fireEvent.click(screen.getByRole('button', { name: 'Generated Artifact report' }));
+        expect(screen.getByRole('button', { name: /Generated Artifact/ })).toHaveTextContent('0 个来源 · 报告');
+        expect(screen.queryByRole('heading', { name: 'Rendered Report' })).not.toBeInTheDocument();
 
+        fireEvent.click(screen.getByRole('button', { name: /Generated Artifact/ }));
+
+        expect(screen.queryByRole('button', { name: '更多' })).not.toBeInTheDocument();
         expect(screen.getByRole('heading', { name: 'Rendered Report' })).toBeInTheDocument();
         expect(screen.getByRole('cell', { name: 'HTTP' })).toBeInTheDocument();
         expect(screen.queryByText('## Rendered Report')).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: '工作室' }));
+
+        expect(screen.getByRole('button', { name: /Generated Artifact/ })).toBeInTheDocument();
+        expect(screen.queryByRole('heading', { name: 'Rendered Report' })).not.toBeInTheDocument();
     });
 
     test('renders restored podcast artifact audio and transcript download links', () => {
@@ -349,11 +359,142 @@ describe('Markdown rendering', () => {
             />
         );
 
-        fireEvent.click(screen.getByRole('button', { name: '播客脚本 podcast_script' }));
+        fireEvent.click(screen.getByRole('button', { name: /播客脚本/ }));
 
         expect(screen.getByRole('link', { name: /MP3/ })).toHaveAttribute('href', '/api/podcast/download/demo.mp3');
         expect(screen.getByRole('link', { name: /转录文本/ })).toHaveAttribute('href', '/api/podcast/download/demo.md');
         expect(screen.getByRole('link', { name: /Markdown/ })).toHaveAttribute('href', '/api/artifacts/podcast-1/download?format=markdown');
+    });
+
+    test('opens restored slide deck artifacts from the generated content list', () => {
+        const onOpenSlideDeck = vi.fn();
+        const contents: GeneratedContent[] = [
+            {
+                id: 'deck-artifact-1',
+                type: 'slide_deck',
+                title: '产品发布演示',
+                createdAt: new Date('2026-06-01T00:00:00Z'),
+                markdown: '# 产品发布演示',
+                payload: { deck_id: 'deck-restored-1' }
+            }
+        ];
+
+        renderZh(
+            <StudioPanel
+                sourceIds={['src-1']}
+                config={config}
+                contents={contents}
+                onContentGenerated={vi.fn()}
+                onOpenSlideDeck={onOpenSlideDeck}
+            />
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: /产品发布演示/ }));
+
+        expect(onOpenSlideDeck).toHaveBeenCalledWith('deck-restored-1');
+        expect(screen.queryByRole('heading', { name: '产品发布演示' })).not.toBeInTheDocument();
+    });
+
+    test('renders mind maps as a connected graph with collapsible multi-level nodes', () => {
+        const { container } = renderZh(
+            <ArtifactViewer
+                content={{
+                    id: 'mind-1',
+                    type: 'mind_map',
+                    title: 'HTTPS 思维图谱',
+                    createdAt: new Date(),
+                    payload: {
+                        title: 'HTTPS 思维图谱',
+                        root: {
+                            id: 'root',
+                            label: 'HTTPS',
+                            children: [
+                                {
+                                    id: 'tls',
+                                    label: 'TLS 加密',
+                                    children: [{ id: 'handshake', label: '握手协商', children: [] }]
+                                },
+                                { id: 'cert', label: '证书验证', children: [] }
+                            ]
+                        }
+                    }
+                }}
+            />
+        );
+
+        expect(screen.getByRole('region', { name: 'HTTPS 思维图谱' })).toBeInTheDocument();
+        expect(container.querySelectorAll('.mind-map-link')).toHaveLength(3);
+        expect(screen.getByRole('button', { name: /HTTPS/ })).toHaveAttribute('aria-expanded', 'true');
+        expect(screen.getByText('握手协商')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: /TLS 加密/ }));
+
+        expect(screen.queryByText('握手协商')).not.toBeInTheDocument();
+    });
+
+    test('does not expose leaf mind map nodes as no-op buttons', () => {
+        renderZh(
+            <ArtifactViewer
+                content={{
+                    id: 'mind-leaf',
+                    type: 'mind_map',
+                    title: '叶子节点图谱',
+                    createdAt: new Date(),
+                    payload: {
+                        title: '叶子节点图谱',
+                        root: {
+                            id: 'root',
+                            label: 'Root',
+                            children: [{ id: 'leaf', label: 'Leaf concept', children: [] }]
+                        }
+                    }
+                }}
+            />
+        );
+
+        expect(screen.getByText('Leaf concept')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Leaf concept' })).not.toBeInTheDocument();
+    });
+
+    test('keeps mind map expansion independent when model returns duplicate node ids', () => {
+        renderZh(
+            <ArtifactViewer
+                content={{
+                    id: 'mind-duplicate',
+                    type: 'mind_map',
+                    title: '重复 ID 图谱',
+                    createdAt: new Date(),
+                    payload: {
+                        title: '重复 ID 图谱',
+                        root: {
+                            id: 'root',
+                            label: 'Root',
+                            children: [
+                                {
+                                    id: 'dup',
+                                    label: 'Shared',
+                                    children: [{ id: 'leaf', label: 'First leaf', children: [] }]
+                                },
+                                {
+                                    id: 'dup',
+                                    label: 'Shared',
+                                    children: [{ id: 'leaf', label: 'Second leaf', children: [] }]
+                                }
+                            ]
+                        }
+                    }
+                }}
+            />
+        );
+
+        const duplicateNodes = screen.getAllByRole('button', { name: 'Shared 1' });
+        expect(screen.getByText('First leaf')).toBeInTheDocument();
+        expect(screen.getByText('Second leaf')).toBeInTheDocument();
+
+        fireEvent.click(duplicateNodes[0]);
+
+        expect(screen.queryByText('First leaf')).not.toBeInTheDocument();
+        expect(screen.getByText('Second leaf')).toBeInTheDocument();
     });
 
     test('renders data table artifacts in an accessible horizontal scroll region', () => {
