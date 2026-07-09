@@ -166,19 +166,42 @@ class SeekDBChunkIndex:
                 n_results=top_k,
                 include=include,
             )
+            results.extend(self._rows_to_results(query_result, score_mode="distance"))
 
-            ids = self._result_group(query_result.get("ids", []))
-            distances = self._result_group(query_result.get("distances", []))
-            metadatas = self._result_group(query_result.get("metadatas", []))
-            for index, _chunk_id in enumerate(ids):
-                try:
-                    metadata = metadatas[index]
-                    chunk = KnowledgeChunk.model_validate_json(metadata["payload"])
-                except Exception as exc:
-                    raise ValueError("Malformed SeekDB chunk result payload") from exc
-                distance = distances[index] if index < len(distances) else 0.0
-                score = 1.0 / (1.0 + max(float(distance), 0.0))
-                results.append({"chunk": chunk, "score": score, "backend": "seekdb"})
+        return sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
+
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_embedding: list[float],
+        source_ids: list[str],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        if not query_embedding:
+            raise ValueError("Query embedding is required")
+        query_text = query_text.strip()
+        if not query_text:
+            return self.search(query_embedding, source_ids, top_k)
+        if top_k <= 0 or not source_ids:
+            return []
+
+        results: list[dict[str, Any]] = []
+        include = ["documents", "metadatas", "distances"]
+        n_results = max(top_k, 1)
+        for source_id in source_ids:
+            collection = self._collection(source_id)
+            collection_hybrid_search = getattr(collection, "hybrid_search", None)
+            if not callable(collection_hybrid_search):
+                return self.search(query_embedding, source_ids, top_k)
+
+            query_result = collection_hybrid_search(
+                query={"where_document": {"$contains": query_text}, "n_results": n_results},
+                knn={"query_embeddings": query_embedding, "n_results": n_results},
+                rank={"rrf": {}},
+                n_results=n_results,
+                include=include,
+            )
+            results.extend(self._rows_to_results(query_result, score_mode="similarity"))
 
         return sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
 
@@ -188,6 +211,25 @@ class SeekDBChunkIndex:
             return []
         first = value[0]
         return first if isinstance(first, list) else value
+
+    def _rows_to_results(self, query_result: dict[str, Any], score_mode: str) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        ids = self._result_group(query_result.get("ids", []))
+        distances = self._result_group(query_result.get("distances", []))
+        metadatas = self._result_group(query_result.get("metadatas", []))
+        for index, _chunk_id in enumerate(ids):
+            try:
+                metadata = metadatas[index]
+                chunk = KnowledgeChunk.model_validate_json(metadata["payload"])
+            except Exception as exc:
+                raise ValueError("Malformed SeekDB chunk result payload") from exc
+            raw_score = float(distances[index]) if index < len(distances) else 0.0
+            if score_mode == "distance":
+                score = 1.0 / (1.0 + max(raw_score, 0.0))
+            else:
+                score = raw_score
+            results.append({"chunk": chunk, "score": score, "backend": "seekdb"})
+        return results
 
     def status(self) -> dict[str, Any]:
         return {

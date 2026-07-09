@@ -34,6 +34,31 @@ class FailingNativeIndex(RecordingNativeIndex):
         raise RuntimeError("native write failed")
 
 
+class HybridRecordingIndex:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def hybrid_search(self, query_text, query_embedding, source_ids, top_k):
+        self.calls.append((query_text, query_embedding, source_ids, top_k))
+        return [
+            {
+                "chunk": KnowledgeChunk(
+                    id="hybrid_chunk",
+                    source_id=source_ids[0],
+                    content="hybrid TLS result",
+                    chunk_index=0,
+                    embedding=[0.1, 0.2, 0.3],
+                    metadata={"source_id": source_ids[0]},
+                ),
+                "score": 0.88,
+                "backend": "seekdb",
+            }
+        ]
+
+    def search(self, query_embedding, source_ids, top_k):
+        raise AssertionError("hybrid_search should be preferred when query text is available")
+
+
 def test_chonkie_chunker_returns_offsets_and_counts():
     pytest.importorskip("chonkie")
     service = ChunkingService(
@@ -137,6 +162,84 @@ async def test_seekdb_repository_uses_bm25_for_term_overlap_without_exact_phrase
     assert results
     assert results[0]["chunk"].id == "chunk-http"
     assert results[0]["score"] > 0
+
+
+@pytest.mark.asyncio
+async def test_seekdb_repository_prefers_native_hybrid_search(tmp_path: Path):
+    native_index = HybridRecordingIndex()
+    repo = SeekDBRepository(
+        tmp_path / "hybrid.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+    source = KnowledgeSource(id="src-hybrid", kind=SourceKind.TEXT, title="Hybrid")
+    await repo.save_source(source)
+
+    results = await repo.search_chunks(
+        "TLS handshake",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[0.1, 0.2, 0.3],
+    )
+
+    assert native_index.calls == [("TLS handshake", [0.1, 0.2, 0.3], [source.id], 1)]
+    assert results[0]["chunk"].id == "hybrid_chunk"
+
+
+@pytest.mark.asyncio
+async def test_seekdb_repository_reranks_native_hybrid_results(tmp_path: Path):
+    class TwoResultHybridIndex(HybridRecordingIndex):
+        def hybrid_search(self, query_text, query_embedding, source_ids, top_k):
+            self.calls.append((query_text, query_embedding, source_ids, top_k))
+            return [
+                {
+                    "chunk": KnowledgeChunk(
+                        id="hybrid-a",
+                        source_id=source_ids[0],
+                        content="first hybrid result",
+                        chunk_index=0,
+                        embedding=[0.1, 0.2, 0.3],
+                        metadata={"source_id": source_ids[0]},
+                    ),
+                    "score": 0.9,
+                    "backend": "seekdb",
+                },
+                {
+                    "chunk": KnowledgeChunk(
+                        id="hybrid-b",
+                        source_id=source_ids[0],
+                        content="second hybrid result",
+                        chunk_index=1,
+                        embedding=[0.2, 0.3, 0.4],
+                        metadata={"source_id": source_ids[0]},
+                    ),
+                    "score": 0.8,
+                    "backend": "seekdb",
+                },
+            ]
+
+    class ReverseReranker:
+        async def rerank(self, query, results, top_k=5):
+            return list(reversed(results))[:top_k]
+
+    native_index = TwoResultHybridIndex()
+    repo = SeekDBRepository(
+        tmp_path / "hybrid-rerank.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+    source = KnowledgeSource(id="src-hybrid-rerank", kind=SourceKind.TEXT, title="Hybrid rerank")
+    await repo.save_source(source)
+
+    results = await repo.search_chunks(
+        "TLS handshake",
+        source_ids=[source.id],
+        top_k=2,
+        query_embedding=[0.1, 0.2, 0.3],
+        rerank_provider=ReverseReranker(),
+    )
+
+    assert [item["chunk"].id for item in results] == ["hybrid-b", "hybrid-a"]
 
 
 @pytest.mark.asyncio

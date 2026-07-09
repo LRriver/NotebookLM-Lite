@@ -304,7 +304,16 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
     ) -> list[dict]:
         if self.native_chunk_index is not None and query_embedding is not None:
             selected_source_ids = source_ids or self._current_source_ids()
-            results = self.native_chunk_index.search(query_embedding, selected_source_ids, top_k)
+            hybrid_search = getattr(self.native_chunk_index, "hybrid_search", None)
+            if callable(hybrid_search):
+                results = hybrid_search(
+                    query_text=query,
+                    query_embedding=query_embedding,
+                    source_ids=selected_source_ids,
+                    top_k=top_k,
+                )
+            else:
+                results = self.native_chunk_index.search(query_embedding, selected_source_ids, top_k)
             return await self._maybe_rerank(query, results, top_k, rerank_provider)
 
         if self.native_chunk_index is not None and not self.allow_sqlite_vector_fallback:

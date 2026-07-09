@@ -27,10 +27,12 @@ class FakeCollection:
         self.upsert_calls = []
         self.delete_calls = []
         self.query_calls = []
+        self.hybrid_calls = []
         self.events = []
         self.refresh_calls = 0
         self.rows = {}
         self.query_error = None
+        self.hybrid_error = None
 
     def upsert(self, ids, documents, metadatas, embeddings):
         self.events.append({"op": "upsert", "ids": ids})
@@ -75,6 +77,26 @@ class FakeCollection:
         return {
             "ids": [ids],
             "distances": [[0.0 + index for index, _ in enumerate(ids)]],
+            "documents": [[self.rows[chunk_id]["document"] for chunk_id in ids]],
+            "metadatas": [[self.rows[chunk_id]["metadata"] for chunk_id in ids]],
+        }
+
+    def hybrid_search(self, query, knn, rank, n_results, include):
+        if self.hybrid_error is not None:
+            raise self.hybrid_error
+        self.hybrid_calls.append(
+            {
+                "query": query,
+                "knn": knn,
+                "rank": rank,
+                "n_results": n_results,
+                "include": include,
+            }
+        )
+        ids = list(self.rows)[:n_results]
+        return {
+            "ids": [ids],
+            "distances": [[10.0 - index for index, _ in enumerate(ids)]],
             "documents": [[self.rows[chunk_id]["document"] for chunk_id in ids]],
             "metadatas": [[self.rows[chunk_id]["metadata"] for chunk_id in ids]],
         }
@@ -178,6 +200,119 @@ def test_search_queries_seekdb_collections_and_reconstructs_chunks(tmp_path: Pat
     assert source_b_query["query_embeddings"] == [[0.1, 0.2, 0.3]]
     assert source_b_query["n_results"] == 2
     assert source_b_query["include"] == ["documents", "metadatas", "distances"]
+
+
+def test_hybrid_search_calls_seekdb_hybrid_and_reconstructs_chunks(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+
+    results = index.hybrid_search(
+        query_text="TLS handshake",
+        query_embedding=[0.1, 0.2, 0.3],
+        source_ids=["source-a"],
+        top_k=1,
+    )
+
+    assert [item["chunk"].id for item in results] == ["chunk-a"]
+    assert results[0]["backend"] == "seekdb"
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    assert collection.hybrid_calls == [
+        {
+            "query": {"where_document": {"$contains": "TLS handshake"}, "n_results": 1},
+            "knn": {"query_embeddings": [0.1, 0.2, 0.3], "n_results": 1},
+            "rank": {"rrf": {}},
+            "n_results": 1,
+            "include": ["documents", "metadatas", "distances"],
+        }
+    ]
+
+
+def test_hybrid_search_preserves_native_relevance_score_order(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks(
+        "source-a",
+        [
+            chunk("chunk-a", "source-a", [0.1, 0.2, 0.3]),
+            chunk("chunk-b", "source-a", [0.9, 0.1, 0.1]),
+        ],
+    )
+
+    results = index.hybrid_search(
+        query_text="TLS handshake",
+        query_embedding=[0.1, 0.2, 0.3],
+        source_ids=["source-a"],
+        top_k=2,
+    )
+
+    assert [item["chunk"].id for item in results] == ["chunk-a", "chunk-b"]
+    assert [item["score"] for item in results] == [10.0, 9.0]
+
+
+def test_hybrid_search_raises_collection_hybrid_errors(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    collection.hybrid_error = RuntimeError("hybrid exploded")
+
+    with pytest.raises(RuntimeError, match="hybrid exploded"):
+        index.hybrid_search(
+            query_text="TLS handshake",
+            query_embedding=[0.1, 0.2, 0.3],
+            source_ids=["source-a"],
+            top_k=1,
+        )
+
+
+def test_hybrid_search_falls_back_to_vector_search_when_collection_lacks_hybrid_api(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.delattr(FakeCollection, "hybrid_search")
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+
+    results = index.hybrid_search(
+        query_text="TLS handshake",
+        query_embedding=[0.1, 0.2, 0.3],
+        source_ids=["source-a"],
+        top_k=1,
+    )
+
+    assert [item["chunk"].id for item in results] == ["chunk-a"]
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    assert collection.query_calls[0]["query_embeddings"] == [[0.1, 0.2, 0.3]]
+
+
+def test_hybrid_search_falls_back_to_vector_search_for_blank_query_text(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+
+    results = index.hybrid_search(
+        query_text="   ",
+        query_embedding=[0.1, 0.2, 0.3],
+        source_ids=["source-a"],
+        top_k=1,
+    )
+
+    assert [item["chunk"].id for item in results] == ["chunk-a"]
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    assert collection.hybrid_calls == []
+    assert collection.query_calls[0]["query_embeddings"] == [[0.1, 0.2, 0.3]]
+
+
+def test_hybrid_search_raises_malformed_payload_results(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    collection.rows["chunk-a"]["metadata"]["payload"] = "{not-json"
+
+    with pytest.raises(ValueError, match="Malformed SeekDB chunk result payload"):
+        index.hybrid_search(
+            query_text="TLS handshake",
+            query_embedding=[0.1, 0.2, 0.3],
+            source_ids=["source-a"],
+            top_k=1,
+        )
 
 
 def test_search_raises_collection_query_errors(tmp_path: Path):
@@ -441,6 +576,31 @@ def test_real_pyseekdb_upsert_refresh_and_query_round_trip(tmp_path: Path):
             top_k=1,
         )
         assert results[0]["chunk"].id == "real-chunk"
+        """
+    )
+
+
+def test_real_pyseekdb_hybrid_search_round_trip(tmp_path: Path):
+    run_real_pyseekdb_subprocess(
+        f"""
+        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
+        index.upsert_source_chunks(
+            "real-source",
+            [
+                chunk("real-lexical", "real-source", [0.9, 0.1, 0.1]),
+                chunk("real-vector", "real-source", [0.1, 0.2, 0.3]),
+                chunk("real-noise", "real-source", [0.8, 0.8, 0.8]),
+            ],
+        )
+        results = index.hybrid_search(
+            query_text="real-lexical",
+            query_embedding=[0.1, 0.2, 0.3],
+            source_ids=["real-source"],
+            top_k=3,
+        )
+        assert results
+        assert results[0]["chunk"].id == "real-lexical"
+        assert results[0]["score"] > 0
         """
     )
 
