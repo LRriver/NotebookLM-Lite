@@ -82,6 +82,16 @@ class StaleAwareNativeIndex(RecordingNativeIndex):
         ]
 
 
+class FailingNativeIndex(RecordingNativeIndex):
+    def __init__(self, message: str = "native write failed") -> None:
+        super().__init__()
+        self.message = message
+
+    def upsert_source_chunks(self, source_id, chunks):
+        self.upserts.append((source_id, chunks))
+        raise RuntimeError(self.message)
+
+
 class DeterministicEmbeddingProvider:
     def __init__(self) -> None:
         self.calls = []
@@ -181,6 +191,30 @@ async def test_repository_requires_native_seekdb_for_vector_save_unless_fallback
             ],
         )
     assert await repo.get_chunks(source.id) == []
+
+
+@pytest.mark.asyncio
+async def test_strict_empty_save_with_native_unavailable_keeps_existing_sqlite_chunks(tmp_path: Path):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-strict-empty", kind=SourceKind.TEXT, title="Strict Empty")
+    old_chunk = KnowledgeChunk(
+        id="chunk-old",
+        source_id=source.id,
+        content="existing sqlite content",
+        chunk_index=0,
+        metadata={"source_id": source.id},
+    )
+    seed_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await seed_repo.save_source(source)
+    await seed_repo.save_chunks(source.id, [old_chunk])
+    await seed_repo.close()
+
+    repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=False)
+
+    with pytest.raises(RuntimeError, match="native SeekDB vector index is unavailable"):
+        await repo.save_chunks(source.id, [])
+
+    assert [chunk.id for chunk in await repo.get_chunks(source.id)] == ["chunk-old"]
 
 
 @pytest.mark.asyncio
@@ -298,6 +332,118 @@ async def test_fallback_no_embedding_save_clears_native_chunks_and_uses_sqlite_s
     assert native_index.upserts == [(source.id, [])]
     assert sqlite_results[0]["chunk"].id == "chunk-fallback-clear"
     assert vector_results == []
+
+
+@pytest.mark.asyncio
+async def test_delete_source_clears_native_chunks_even_when_sqlite_ids_are_stale(tmp_path: Path):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-delete-clear", kind=SourceKind.TEXT, title="Delete Clear")
+    seed_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await seed_repo.save_source(source)
+    await seed_repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="sqlite-only-chunk",
+                source_id=source.id,
+                content="sqlite-only content",
+                chunk_index=0,
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+    await seed_repo.close()
+    native_index = StaleAwareNativeIndex()
+    repo = SeekDBRepository(db_path, native_chunk_index=native_index, allow_sqlite_vector_fallback=True)
+
+    await repo.delete_source(source.id)
+    stale_results = await repo.search_chunks(
+        "stale native",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[0.1, 0.2, 0.3],
+    )
+
+    assert (source.id, []) in native_index.upserts
+    assert stale_results == []
+
+
+@pytest.mark.asyncio
+async def test_native_upsert_failure_rolls_back_sqlite_chunk_replacement(tmp_path: Path):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-native-rollback", kind=SourceKind.TEXT, title="Native Rollback")
+    old_chunk = KnowledgeChunk(
+        id="chunk-old",
+        source_id=source.id,
+        content="old sqlite content",
+        chunk_index=0,
+        embedding=[0.4, 0.5, 0.6],
+        metadata={"source_id": source.id},
+    )
+    seed_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await seed_repo.save_source(source)
+    await seed_repo.save_chunks(source.id, [old_chunk])
+    await seed_repo.close()
+    repo = SeekDBRepository(
+        db_path,
+        native_chunk_index=FailingNativeIndex(),
+        allow_sqlite_vector_fallback=False,
+    )
+
+    with pytest.raises(RuntimeError, match="native write failed"):
+        await repo.save_chunks(
+            source.id,
+            [
+                KnowledgeChunk(
+                    id="chunk-new",
+                    source_id=source.id,
+                    content="new sqlite content",
+                    chunk_index=0,
+                    embedding=[0.1, 0.2, 0.3],
+                    metadata={"source_id": source.id},
+                )
+            ],
+        )
+
+    assert [chunk.id for chunk in await repo.get_chunks(source.id)] == ["chunk-old"]
+
+
+@pytest.mark.asyncio
+async def test_native_clear_failure_rolls_back_fallback_sqlite_chunk_replacement(tmp_path: Path):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-clear-rollback", kind=SourceKind.TEXT, title="Clear Rollback")
+    old_chunk = KnowledgeChunk(
+        id="chunk-old",
+        source_id=source.id,
+        content="old fallback content",
+        chunk_index=0,
+        metadata={"source_id": source.id},
+    )
+    seed_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await seed_repo.save_source(source)
+    await seed_repo.save_chunks(source.id, [old_chunk])
+    await seed_repo.close()
+    repo = SeekDBRepository(
+        db_path,
+        native_chunk_index=FailingNativeIndex("native clear failed"),
+        allow_sqlite_vector_fallback=True,
+    )
+
+    with pytest.raises(RuntimeError, match="native clear failed"):
+        await repo.save_chunks(
+            source.id,
+            [
+                KnowledgeChunk(
+                    id="chunk-new",
+                    source_id=source.id,
+                    content="new fallback content",
+                    chunk_index=0,
+                    metadata={"source_id": source.id},
+                )
+            ],
+        )
+
+    assert [chunk.id for chunk in await repo.get_chunks(source.id)] == ["chunk-old"]
 
 
 @pytest.mark.asyncio

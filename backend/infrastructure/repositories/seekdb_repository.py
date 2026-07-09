@@ -232,17 +232,15 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         return [KnowledgeSource.model_validate_json(row["payload"]) for row in rows]
 
     async def delete_source(self, source_id: str) -> bool:
-        chunk_rows = self._conn.execute("SELECT id FROM chunks WHERE source_id = ?", (source_id,)).fetchall()
-        chunk_ids = [row["id"] for row in chunk_rows]
-        if self.native_chunk_index is not None:
-            self.native_chunk_index.delete_source_chunks(source_id, chunk_ids)
-        self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
-        self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
-        self._conn.commit()
+        with self._conn:
+            if self.native_chunk_index is not None:
+                self.native_chunk_index.upsert_source_chunks(source_id, [])
+            self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
+            self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         return True
 
     async def save_chunks(self, source_id: str, chunks: list[KnowledgeChunk]) -> None:
-        if self.native_chunk_index is None and chunks and not self.allow_sqlite_vector_fallback:
+        if self.native_chunk_index is None and not self.allow_sqlite_vector_fallback:
             raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
 
         if self.native_chunk_index is not None and chunks and not self.allow_sqlite_vector_fallback:
@@ -253,33 +251,32 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                     f"missing embeddings for: {', '.join(missing_embeddings)}"
                 )
 
-        self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
-        self._conn.executemany(
-            """
-            INSERT INTO chunks(id, source_id, content, chunk_index, embedding, payload)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    chunk.id,
-                    chunk.source_id,
-                    chunk.content,
-                    chunk.chunk_index,
-                    json.dumps(chunk.embedding) if chunk.embedding is not None else None,
-                    _dump_model(chunk),
-                )
-                for chunk in chunks
-            ],
-        )
-        self._conn.commit()
-
+        native_chunks: list[KnowledgeChunk] | None = None
         if self.native_chunk_index is not None:
             has_all_embeddings = bool(chunks) and all(chunk.embedding is not None for chunk in chunks)
-            if has_all_embeddings:
-                self.native_chunk_index.upsert_source_chunks(source_id, chunks)
-            else:
-                self.native_chunk_index.upsert_source_chunks(source_id, [])
-            return
+            native_chunks = chunks if has_all_embeddings else []
+
+        with self._conn:
+            self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
+            self._conn.executemany(
+                """
+                INSERT INTO chunks(id, source_id, content, chunk_index, embedding, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        chunk.id,
+                        chunk.source_id,
+                        chunk.content,
+                        chunk.chunk_index,
+                        json.dumps(chunk.embedding) if chunk.embedding is not None else None,
+                        _dump_model(chunk),
+                    )
+                    for chunk in chunks
+                ],
+            )
+            if native_chunks is not None:
+                self.native_chunk_index.upsert_source_chunks(source_id, native_chunks)
 
     async def get_chunks(self, source_id: str) -> list[KnowledgeChunk]:
         rows = self._conn.execute(
