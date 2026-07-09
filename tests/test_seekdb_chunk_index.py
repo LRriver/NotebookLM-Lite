@@ -79,6 +79,9 @@ class FakeCollection:
     def count(self):
         return len(self.rows)
 
+    def get(self, include=None, **kwargs):
+        return {"ids": list(self.rows)}
+
     def refresh_index(self):
         self.refresh_calls += 1
 
@@ -205,8 +208,54 @@ def test_upsert_source_chunks_replaces_existing_source_collection(tmp_path: Path
     )
 
     assert [item["chunk"].id for item in results] == ["chunk-c"]
-    assert collection.delete_calls[-1]["where"] == {"source_id": "source-a"}
-    assert [event["op"] for event in collection.events[-2:]] == ["delete", "upsert"]
+    assert collection.delete_calls[-1]["ids"] == ["chunk-a", "chunk-b"]
+    assert [event["op"] for event in collection.events[-2:]] == ["upsert", "delete"]
+
+
+def test_upsert_source_chunks_removes_stale_bad_metadata_by_collection_membership(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    stale = chunk(
+        "stale-chunk",
+        "source-a",
+        [0.2, 0.2, 0.2],
+        metadata={"source_id": "wrong-source"},
+    )
+    collection.upsert(
+        ids=[stale.id],
+        documents=[stale.content],
+        metadatas=[{"source_id": "wrong-source", "payload": stale.model_dump_json()}],
+        embeddings=[stale.embedding],
+    )
+    collection.refresh_index()
+
+    index.upsert_source_chunks("source-a", [chunk("chunk-c", "source-a", [0.9, 0.1, 0.1])])
+    results = index.search(
+        query_embedding=[0.9, 0.1, 0.1],
+        source_ids=["source-a"],
+        top_k=10,
+    )
+
+    assert [item["chunk"].id for item in results] == ["chunk-c"]
+    assert collection.delete_calls[-1]["ids"] == ["chunk-a", "stale-chunk"]
+
+
+def test_upsert_source_chunks_dimension_mismatch_preserves_existing_chunks(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+
+    with pytest.raises(ValueError, match="dimension"):
+        index.upsert_source_chunks("source-a", [chunk("chunk-b", "source-a", [0.1, 0.2])])
+
+    results = index.search(
+        query_embedding=[0.1, 0.2, 0.3],
+        source_ids=["source-a"],
+        top_k=10,
+    )
+
+    assert [item["chunk"].id for item in results] == ["chunk-a"]
 
 
 def test_upsert_source_chunks_overrides_conflicting_metadata_source_id_for_replacement(tmp_path: Path):
@@ -256,7 +305,7 @@ def test_upsert_source_chunks_empty_list_clears_existing_source_collection(tmp_p
     )
 
     assert results == []
-    assert collection.delete_calls[-1]["where"] == {"source_id": "source-a"}
+    assert collection.delete_calls[-1]["ids"] == ["chunk-a"]
     assert collection.refresh_calls == 2
 
 
@@ -422,5 +471,58 @@ def test_real_pyseekdb_empty_reindex_clears_existing_chunks(tmp_path: Path):
             top_k=10,
         )
         assert results == []
+        """
+    )
+
+
+def test_real_pyseekdb_stale_bad_metadata_row_is_removed_by_collection_membership(tmp_path: Path):
+    run_real_pyseekdb_subprocess(
+        f"""
+        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
+        index.upsert_source_chunks("real-source", [chunk("real-a", "real-source", [0.1, 0.2, 0.3])])
+        stale = chunk(
+            "real-stale",
+            "real-source",
+            [0.2, 0.2, 0.2],
+            metadata={{"source_id": "wrong-source"}},
+        )
+        collection = index._collection("real-source", dimension=3)
+        collection.upsert(
+            ids=[stale.id],
+            documents=[stale.content],
+            metadatas=[{{"source_id": "wrong-source", "payload": stale.model_dump_json()}}],
+            embeddings=[stale.embedding],
+        )
+        collection.refresh_index()
+
+        index.upsert_source_chunks("real-source", [chunk("real-c", "real-source", [0.9, 0.1, 0.1])])
+        results = index.search(
+            query_embedding=[0.9, 0.1, 0.1],
+            source_ids=["real-source"],
+            top_k=10,
+        )
+        assert [item["chunk"].id for item in results] == ["real-c"]
+        """
+    )
+
+
+def test_real_pyseekdb_dimension_mismatch_preserves_existing_chunks(tmp_path: Path):
+    run_real_pyseekdb_subprocess(
+        f"""
+        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
+        index.upsert_source_chunks("real-source", [chunk("real-a", "real-source", [0.1, 0.2, 0.3])])
+        try:
+            index.upsert_source_chunks("real-source", [chunk("real-b", "real-source", [0.1, 0.2])])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("dimension mismatch did not raise")
+
+        results = index.search(
+            query_embedding=[0.1, 0.2, 0.3],
+            source_ids=["real-source"],
+            top_k=10,
+        )
+        assert [item["chunk"].id for item in results] == ["real-a"]
         """
     )

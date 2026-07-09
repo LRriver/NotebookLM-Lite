@@ -73,13 +73,23 @@ class SeekDBChunkIndex:
         )
         return "collection" in message and any(marker in message for marker in missing_markers)
 
+    @staticmethod
+    def _collection_ids(collection: Any) -> list[str]:
+        result = collection.get(include=[])
+        ids = result.get("ids", [])
+        if isinstance(ids, str):
+            return [ids]
+        return list(ids or [])
+
     def upsert_source_chunks(self, source_id: str, chunks: list[KnowledgeChunk]) -> None:
+        existing_collection = self._existing_collection(source_id)
         if not chunks:
-            collection = self._existing_collection(source_id)
-            if collection is None:
+            if existing_collection is None:
                 return
-            collection.delete(where={"source_id": source_id})
-            collection.refresh_index()
+            existing_ids = self._collection_ids(existing_collection)
+            if existing_ids:
+                existing_collection.delete(ids=existing_ids)
+                existing_collection.refresh_index()
             return
 
         dimension = self._first_embedding_dimension(chunks)
@@ -97,15 +107,32 @@ class SeekDBChunkIndex:
             metadata["payload"] = chunk.model_dump_json()
             metadatas.append(metadata)
 
-        collection = self._collection(source_id, dimension=dimension)
-        collection.delete(where={"source_id": source_id})
+        if existing_collection is not None:
+            existing_dimension = getattr(existing_collection, "dimension", None)
+            if existing_dimension is not None and existing_dimension != dimension:
+                raise ValueError(
+                    f"Existing SeekDB collection dimension {existing_dimension} "
+                    f"does not match chunk embedding dimension {dimension}"
+                )
+            collection = existing_collection
+            existing_ids = self._collection_ids(collection)
+        else:
+            collection = self._collection(source_id, dimension=dimension)
+            existing_ids = []
+
+        new_ids = [chunk.id for chunk in chunks]
         collection.upsert(
-            ids=[chunk.id for chunk in chunks],
+            ids=new_ids,
             documents=[chunk.content for chunk in chunks],
             metadatas=metadatas,
             embeddings=embeddings,
         )
         collection.refresh_index()
+        new_id_set = set(new_ids)
+        stale_ids = [chunk_id for chunk_id in existing_ids if chunk_id not in new_id_set]
+        if stale_ids:
+            collection.delete(ids=stale_ids)
+            collection.refresh_index()
 
     def delete_source_chunks(self, source_id: str, chunk_ids: list[str]) -> None:
         if not chunk_ids:
