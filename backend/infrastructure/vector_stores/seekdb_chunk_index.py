@@ -160,16 +160,12 @@ class SeekDBChunkIndex:
         results: list[dict[str, Any]] = []
         include = ["documents", "metadatas", "distances"]
         for source_id in source_ids:
-            try:
-                collection = self._collection(source_id)
-                query_result = collection.query(
-                    query_embeddings=[query_embedding],
-                    n_results=top_k,
-                    include=include,
-                )
-            except Exception as exc:
-                logger.warning("Failed to query SeekDB chunks for source %s: %s", source_id, exc)
-                continue
+            collection = self._collection(source_id)
+            query_result = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                include=include,
+            )
 
             ids = self._result_group(query_result.get("ids", []))
             distances = self._result_group(query_result.get("distances", []))
@@ -178,11 +174,11 @@ class SeekDBChunkIndex:
                 try:
                     metadata = metadatas[index]
                     chunk = KnowledgeChunk.model_validate_json(metadata["payload"])
-                    distance = distances[index] if index < len(distances) else 0.0
-                    score = 1.0 / (1.0 + max(float(distance), 0.0))
-                    results.append({"chunk": chunk, "score": score, "backend": "seekdb"})
                 except Exception as exc:
-                    logger.warning("Skipping malformed SeekDB chunk result: %s", exc)
+                    raise ValueError("Malformed SeekDB chunk result payload") from exc
+                distance = distances[index] if index < len(distances) else 0.0
+                score = 1.0 / (1.0 + max(float(distance), 0.0))
+                results.append({"chunk": chunk, "score": score, "backend": "seekdb"})
 
         return sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
 

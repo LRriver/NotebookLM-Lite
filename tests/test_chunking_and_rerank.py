@@ -28,6 +28,12 @@ class RecordingNativeIndex:
         return {"vector_backend": "seekdb", "native_available": True}
 
 
+class FailingNativeIndex(RecordingNativeIndex):
+    def upsert_source_chunks(self, source_id, chunks):
+        super().upsert_source_chunks(source_id, chunks)
+        raise RuntimeError("native write failed")
+
+
 def test_chonkie_chunker_returns_offsets_and_counts():
     pytest.importorskip("chonkie")
     service = ChunkingService(
@@ -152,3 +158,25 @@ async def test_seekdb_vector_store_add_chunks_does_not_leave_ready_source_on_str
 
     assert await repo.get_source("doc-strict") is None
     assert await repo.get_chunks("doc-strict") == []
+
+
+@pytest.mark.asyncio
+async def test_seekdb_vector_store_add_chunks_rolls_back_new_source_when_native_save_fails(
+    tmp_path: Path,
+):
+    repo = SeekDBRepository(
+        tmp_path / "strict-valid-embeddings.db",
+        native_chunk_index=FailingNativeIndex(),
+        allow_sqlite_vector_fallback=False,
+    )
+    store = SeekDBVectorStore(repository=repo)
+
+    with pytest.raises(RuntimeError, match="native write failed"):
+        await store.add_chunks(
+            "doc-native-fail",
+            [{"content": "strict native content", "metadata": {"filename": "strict.txt"}}],
+            embeddings=[[0.1, 0.2, 0.3]],
+        )
+
+    assert await repo.get_source("doc-native-fail") is None
+    assert await repo.get_chunks("doc-native-fail") == []

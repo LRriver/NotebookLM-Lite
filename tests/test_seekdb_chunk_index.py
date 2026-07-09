@@ -30,6 +30,7 @@ class FakeCollection:
         self.events = []
         self.refresh_calls = 0
         self.rows = {}
+        self.query_error = None
 
     def upsert(self, ids, documents, metadatas, embeddings):
         self.events.append({"op": "upsert", "ids": ids})
@@ -61,6 +62,8 @@ class FakeCollection:
                     self.rows.pop(chunk_id, None)
 
     def query(self, query_embeddings, n_results, include):
+        if self.query_error is not None:
+            raise self.query_error
         self.query_calls.append(
             {
                 "query_embeddings": query_embeddings,
@@ -175,6 +178,45 @@ def test_search_queries_seekdb_collections_and_reconstructs_chunks(tmp_path: Pat
     assert source_b_query["query_embeddings"] == [[0.1, 0.2, 0.3]]
     assert source_b_query["n_results"] == 2
     assert source_b_query["include"] == ["documents", "metadatas", "distances"]
+
+
+def test_search_raises_collection_query_errors(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    collection.query_error = RuntimeError("query exploded")
+
+    with pytest.raises(RuntimeError, match="query exploded"):
+        index.search(
+            query_embedding=[0.1, 0.2, 0.3],
+            source_ids=["source-a"],
+            top_k=1,
+        )
+
+
+def test_search_raises_malformed_payload_results(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    collection.rows["chunk-a"]["metadata"]["payload"] = "{not-json"
+
+    with pytest.raises(ValueError, match="Malformed SeekDB chunk result payload"):
+        index.search(
+            query_embedding=[0.1, 0.2, 0.3],
+            source_ids=["source-a"],
+            top_k=1,
+        )
+
+
+def test_search_raises_missing_source_collection(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+
+    with pytest.raises(KeyError):
+        index.search(
+            query_embedding=[0.1, 0.2, 0.3],
+            source_ids=["source-missing"],
+            top_k=1,
+        )
 
 
 def test_delete_source_chunks_refreshes_collection_after_successful_delete(tmp_path: Path):

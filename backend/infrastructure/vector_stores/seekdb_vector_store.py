@@ -31,6 +31,7 @@ class SeekDBVectorStore(VectorStoreInterface):
         self._validate_strict_native_write(chunks, embeddings)
 
         existing = await self.repository.get_source(doc_id)
+        created_source = existing is None
         if existing is None:
             existing = KnowledgeSource(
                 id=doc_id,
@@ -53,7 +54,12 @@ class SeekDBVectorStore(VectorStoreInterface):
                     metadata={"source_id": doc_id, "chunk_index": index, **metadata},
                 )
             )
-        await self.repository.save_chunks(doc_id, knowledge_chunks)
+        try:
+            await self.repository.save_chunks(doc_id, knowledge_chunks)
+        except Exception:
+            if created_source:
+                await self._rollback_created_source(doc_id)
+            raise
 
     def _validate_strict_native_write(
         self,
@@ -76,6 +82,13 @@ class SeekDBVectorStore(VectorStoreInterface):
         )
         if has_missing_embedding:
             raise RuntimeError("native SeekDB chunk writes require embeddings for all chunks")
+
+    async def _rollback_created_source(self, doc_id: str) -> None:
+        rollback_metadata = getattr(self.repository, "delete_source_metadata_only", None)
+        if rollback_metadata is not None:
+            await rollback_metadata(doc_id)
+            return
+        await self.repository.delete_source(doc_id)
 
     async def search(
         self,

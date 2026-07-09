@@ -242,6 +242,12 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         return True
 
+    async def delete_source_metadata_only(self, source_id: str) -> None:
+        """Rollback local metadata without touching native SeekDB."""
+        with self._conn:
+            self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
+            self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+
     async def save_chunks(self, source_id: str, chunks: list[KnowledgeChunk]) -> None:
         if self.native_chunk_index is None and not self.allow_sqlite_vector_fallback:
             raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
