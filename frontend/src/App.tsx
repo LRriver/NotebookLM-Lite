@@ -129,6 +129,7 @@ export interface GeneratedContent {
     type: string;
     title: string;
     createdAt: Date;
+    sourceIds?: string[];
     audioUrl?: string | null;
     transcriptUrl?: string | null;
     audioFilename?: string | null;
@@ -149,6 +150,7 @@ function App() {
     const [generatedContents, setGeneratedContents] = useState<GeneratedContent[]>([]);
     const [notesRefreshKey, setNotesRefreshKey] = useState(0);
     const [showConfig, setShowConfig] = useState(false);
+    const [isStudioDetailMode, setIsStudioDetailMode] = useState(false);
     const [slideDeckWorkspaceId, setSlideDeckWorkspaceId] = useState<string | null | undefined>(() => {
         return localStorage.getItem('notebooklm-active-slide-deck') || undefined;
     });
@@ -324,6 +326,7 @@ function App() {
                 type: artifact.artifact_type,
                 title: artifact.title,
                 createdAt: new Date(artifact.created_at),
+                sourceIds: artifact.source_ids || [],
                 markdown: artifact.markdown,
                 payload: artifact.payload,
                 fileRefs: artifact.file_refs || [],
@@ -398,7 +401,7 @@ function App() {
                         onDeckReady={rememberSlideDeck}
                     />
                 ) : (
-                    <main className="app-main">
+                    <main className={`app-main ${isStudioDetailMode ? 'studio-detail-layout' : ''}`}>
                         <div className="panel panel-left split-panel">
                             <SourcePanel
                                 sources={sources}
@@ -428,6 +431,7 @@ function App() {
                                 contents={generatedContents}
                                 onContentGenerated={handleContentGenerated}
                                 onOpenSlideDeck={openSlideDeck}
+                                onDetailModeChange={setIsStudioDetailMode}
                             />
                         </div>
                     </main>
