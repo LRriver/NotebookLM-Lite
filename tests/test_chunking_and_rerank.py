@@ -14,6 +14,20 @@ def sqlite_fallback_repo(path: Path) -> SeekDBRepository:
     return SeekDBRepository(path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
 
 
+class RecordingNativeIndex:
+    def __init__(self) -> None:
+        self.upserts = []
+
+    def upsert_source_chunks(self, source_id, chunks):
+        self.upserts.append((source_id, chunks))
+
+    def search(self, query_embedding, source_ids, top_k):
+        return []
+
+    def status(self):
+        return {"vector_backend": "seekdb", "native_available": True}
+
+
 def test_chonkie_chunker_returns_offsets_and_counts():
     pytest.importorskip("chonkie")
     service = ChunkingService(
@@ -117,3 +131,24 @@ async def test_seekdb_repository_uses_bm25_for_term_overlap_without_exact_phrase
     assert results
     assert results[0]["chunk"].id == "chunk-http"
     assert results[0]["score"] > 0
+
+
+@pytest.mark.asyncio
+async def test_seekdb_vector_store_add_chunks_does_not_leave_ready_source_on_strict_native_failure(
+    tmp_path: Path,
+):
+    repo = SeekDBRepository(
+        tmp_path / "strict-add.db",
+        native_chunk_index=RecordingNativeIndex(),
+        allow_sqlite_vector_fallback=False,
+    )
+    store = SeekDBVectorStore(repository=repo)
+
+    with pytest.raises(RuntimeError, match="embeddings|native SeekDB"):
+        await store.add_chunks(
+            "doc-strict",
+            [{"content": "strict native content", "metadata": {"filename": "strict.txt"}}],
+        )
+
+    assert await repo.get_source("doc-strict") is None
+    assert await repo.get_chunks("doc-strict") == []

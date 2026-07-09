@@ -28,6 +28,8 @@ class SeekDBVectorStore(VectorStoreInterface):
         chunks: list[dict[str, Any]],
         embeddings: Optional[list[list[float]]] = None,
     ) -> None:
+        self._validate_strict_native_write(chunks, embeddings)
+
         existing = await self.repository.get_source(doc_id)
         if existing is None:
             existing = KnowledgeSource(
@@ -52,6 +54,28 @@ class SeekDBVectorStore(VectorStoreInterface):
                 )
             )
         await self.repository.save_chunks(doc_id, knowledge_chunks)
+
+    def _validate_strict_native_write(
+        self,
+        chunks: list[dict[str, Any]],
+        embeddings: Optional[list[list[float]]],
+    ) -> None:
+        if getattr(self.repository, "allow_sqlite_vector_fallback", True):
+            return
+        if getattr(self.repository, "native_chunk_index", None) is None:
+            raise RuntimeError(
+                "native SeekDB vector index is unavailable; "
+                "enable seekdb_allow_sqlite_fallback for SQLite fallback"
+            )
+        if not chunks:
+            return
+
+        provided_embeddings = embeddings or []
+        has_missing_embedding = len(provided_embeddings) < len(chunks) or any(
+            embedding is None or len(embedding) == 0 for embedding in provided_embeddings[: len(chunks)]
+        )
+        if has_missing_embedding:
+            raise RuntimeError("native SeekDB chunk writes require embeddings for all chunks")
 
     async def search(
         self,

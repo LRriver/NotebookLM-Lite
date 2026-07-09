@@ -369,6 +369,31 @@ async def test_delete_source_clears_native_chunks_even_when_sqlite_ids_are_stale
 
 
 @pytest.mark.asyncio
+async def test_delete_source_requires_native_seekdb_before_sqlite_mutation(tmp_path: Path):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-strict-delete", kind=SourceKind.TEXT, title="Strict Delete")
+    old_chunk = KnowledgeChunk(
+        id="chunk-strict-delete",
+        source_id=source.id,
+        content="existing sqlite metadata",
+        chunk_index=0,
+        embedding=[0.1, 0.2, 0.3],
+        metadata={"source_id": source.id},
+    )
+    seed_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await seed_repo.save_source(source)
+    await seed_repo.save_chunks(source.id, [old_chunk])
+    await seed_repo.close()
+    repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=False)
+
+    with pytest.raises(RuntimeError, match="native SeekDB vector index is unavailable"):
+        await repo.delete_source(source.id)
+
+    assert await repo.get_source(source.id) is not None
+    assert [chunk.id for chunk in await repo.get_chunks(source.id)] == ["chunk-strict-delete"]
+
+
+@pytest.mark.asyncio
 async def test_native_upsert_failure_rolls_back_sqlite_chunk_replacement(tmp_path: Path):
     db_path = tmp_path / "knowledge.db"
     source = KnowledgeSource(id="src-native-rollback", kind=SourceKind.TEXT, title="Native Rollback")

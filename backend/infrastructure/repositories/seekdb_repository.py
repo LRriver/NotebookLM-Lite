@@ -232,6 +232,9 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         return [KnowledgeSource.model_validate_json(row["payload"]) for row in rows]
 
     async def delete_source(self, source_id: str) -> bool:
+        if self.native_chunk_index is None and not self.allow_sqlite_vector_fallback:
+            raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
+
         with self._conn:
             if self.native_chunk_index is not None:
                 self.native_chunk_index.upsert_source_chunks(source_id, [])
