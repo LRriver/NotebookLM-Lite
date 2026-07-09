@@ -244,7 +244,7 @@ async def test_seekdb_repository_persists_slide_deck_state_after_restart(tmp_pat
     assert (await reopened.get_slide_deck_job(job.id)).status == JobStatus.FAILED
 
 
-def test_seekdb_repository_uses_separate_embedded_path_for_pyseekdb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_seekdb_repository_uses_separate_embedded_path_for_native_seekdb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     calls: list[str] = []
 
     class FakeClient:
@@ -259,26 +259,18 @@ def test_seekdb_repository_uses_separate_embedded_path_for_pyseekdb(tmp_path: Pa
 
     assert calls == [str(tmp_path / "knowledge.seekdb")]
     assert db_path.is_file()
-    assert repo.seekdb_client is not None
+    assert repo.native_chunk_index is not None
+    assert repo.storage_status()["seekdb_path"] == str(tmp_path / "knowledge.seekdb")
+    assert repo.storage_status()["native_available"] is True
 
 
 @pytest.mark.asyncio
-async def test_seekdb_repository_keeps_sqlite_chunks_when_optional_pyseekdb_mirror_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    class FailingCollection:
-        def upsert(self, **kwargs) -> None:
-            raise RuntimeError("default embedding model is unavailable")
-
-    class FakeClient:
-        def __init__(self, path: str) -> None:
-            Path(path).mkdir(parents=True, exist_ok=True)
-
-        def get_or_create_collection(self, name: str):
-            return FailingCollection()
-
-    monkeypatch.setitem(sys.modules, "pyseekdb", types.SimpleNamespace(Client=FakeClient))
-    repo = SeekDBRepository(tmp_path / "knowledge.db")
+async def test_seekdb_repository_uses_sqlite_chunk_search_only_when_fallback_is_enabled(tmp_path: Path):
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=None,
+        allow_sqlite_vector_fallback=True,
+    )
     chunk = KnowledgeChunk(
         id="chunk_1",
         source_id="src_1",
@@ -293,6 +285,7 @@ async def test_seekdb_repository_keeps_sqlite_chunks_when_optional_pyseekdb_mirr
     results = await repo.search_chunks("hybrid retrieval", top_k=1)
     assert [item.id for item in loaded] == ["chunk_1"]
     assert results[0]["chunk"].id == "chunk_1"
+    assert repo.storage_status()["vector_backend"] == "sqlite_fallback"
 
 
 def test_slide_deck_file_store_writes_ignored_files_and_returns_metadata(tmp_path: Path):

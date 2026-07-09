@@ -117,8 +117,87 @@ async def test_repository_requires_native_seekdb_for_vector_save_unless_fallback
 
 
 @pytest.mark.asyncio
+async def test_repository_requires_native_seekdb_for_non_vector_chunk_save_unless_fallback_enabled(tmp_path: Path):
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=None,
+        allow_sqlite_vector_fallback=False,
+    )
+    source = KnowledgeSource(id="src-no-native-text", kind=SourceKind.TEXT, title="No Native Text")
+    await repo.save_source(source)
+
+    with pytest.raises(RuntimeError, match="native SeekDB vector index is unavailable"):
+        await repo.save_chunks(
+            source.id,
+            [
+                KnowledgeChunk(
+                    id="chunk-no-native-text",
+                    source_id=source.id,
+                    content="content without an embedding",
+                    chunk_index=0,
+                    metadata={"source_id": source.id},
+                )
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_repository_requires_query_embedding_when_native_seekdb_is_primary(tmp_path: Path):
+    native_index = RecordingNativeIndex()
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+    source = KnowledgeSource(id="src-native-query", kind=SourceKind.TEXT, title="Native Query")
+    await repo.save_source(source)
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-native-query",
+                source_id=source.id,
+                content="native query content",
+                chunk_index=0,
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="native SeekDB vector search requires query embeddings"):
+        await repo.search_chunks("native query", source_ids=[source.id], top_k=1)
+
+
+@pytest.mark.asyncio
+async def test_repository_does_not_search_sqlite_bm25_without_explicit_fallback(tmp_path: Path):
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=None,
+        allow_sqlite_vector_fallback=True,
+    )
+    source = KnowledgeSource(id="src-bm25-disabled", kind=SourceKind.TEXT, title="BM25 Disabled")
+    await repo.save_source(source)
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-bm25-disabled",
+                source_id=source.id,
+                content="Needle lexical content",
+                chunk_index=0,
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+    repo.allow_sqlite_vector_fallback = False
+
+    with pytest.raises(RuntimeError, match="native SeekDB vector index is unavailable"):
+        await repo.search_chunks("Needle", source_ids=[source.id], top_k=1)
+
+
+@pytest.mark.asyncio
 async def test_text_source_is_chunked_with_citation_metadata(tmp_path: Path):
-    repo = SeekDBRepository(tmp_path / "knowledge.db")
+    repo = SeekDBRepository(tmp_path / "knowledge.db", native_chunk_index=None, allow_sqlite_vector_fallback=True)
     service = SourceService(
         repository=repo,
         parser=DoclingParser(),
@@ -152,7 +231,7 @@ async def test_upload_parse_failure_is_recorded(tmp_path: Path):
         async def parse_text(self, text: str, title: str = "Pasted text"):
             raise AssertionError("not used")
 
-    repo = SeekDBRepository(tmp_path / "knowledge.db")
+    repo = SeekDBRepository(tmp_path / "knowledge.db", native_chunk_index=None, allow_sqlite_vector_fallback=True)
     service = SourceService(repository=repo, parser=BrokenParser())
     file_path = tmp_path / "broken.pdf"
     file_path.write_bytes(b"%PDF-1.4 broken")
@@ -167,13 +246,13 @@ async def test_upload_parse_failure_is_recorded(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_seekdb_repository_persists_sources_after_restart(tmp_path: Path):
     db_path = tmp_path / "knowledge.db"
-    repo = SeekDBRepository(db_path)
+    repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=40, chunk_overlap=0)
 
     created = await service.create_text_source("Durable", "Persistent source text for restart.")
     await repo.close()
 
-    reopened = SeekDBRepository(db_path)
+    reopened = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
     loaded = await reopened.get_source(created.id)
     chunks = await reopened.get_chunks(created.id)
 
@@ -185,7 +264,7 @@ async def test_seekdb_repository_persists_sources_after_restart(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_delete_source_removes_chunks_from_retrieval(tmp_path: Path):
-    repo = SeekDBRepository(tmp_path / "knowledge.db")
+    repo = SeekDBRepository(tmp_path / "knowledge.db", native_chunk_index=None, allow_sqlite_vector_fallback=True)
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=64, chunk_overlap=0)
 
     source = await service.create_text_source("Delete me", "Needle phrase should disappear.")
@@ -199,7 +278,7 @@ async def test_delete_source_removes_chunks_from_retrieval(tmp_path: Path):
 
 
 def test_sources_api_text_upload_list_get_delete(tmp_path: Path):
-    repo = SeekDBRepository(tmp_path / "api.db")
+    repo = SeekDBRepository(tmp_path / "api.db", native_chunk_index=None, allow_sqlite_vector_fallback=True)
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=64, chunk_overlap=0)
     app = FastAPI()
     app.include_router(sources_router, prefix="/api")
@@ -231,7 +310,7 @@ def test_sources_api_text_upload_list_get_delete(tmp_path: Path):
 
 
 def test_sources_api_file_upload_text_fallback(tmp_path: Path):
-    repo = SeekDBRepository(tmp_path / "upload.db")
+    repo = SeekDBRepository(tmp_path / "upload.db", native_chunk_index=None, allow_sqlite_vector_fallback=True)
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=64, chunk_overlap=0)
     app = FastAPI()
     app.include_router(sources_router, prefix="/api")

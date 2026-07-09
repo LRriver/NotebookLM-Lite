@@ -22,7 +22,7 @@ from ..vector_stores.seekdb_chunk_index import SeekDBChunkIndex
 
 logger = logging.getLogger(__name__)
 
-_AUTO_NATIVE_CHUNK_INDEX: Any = object()
+_AUTO_NATIVE_INDEX: Any = object()
 _NATIVE_UNAVAILABLE_MESSAGE = (
     "native SeekDB vector index is unavailable; enable seekdb_allow_sqlite_fallback for SQLite fallback"
 )
@@ -88,7 +88,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
     def __init__(
         self,
         db_path: str | Path,
-        native_chunk_index: object | None = _AUTO_NATIVE_CHUNK_INDEX,
+        native_chunk_index: object = _AUTO_NATIVE_INDEX,
         allow_sqlite_vector_fallback: bool = False,
     ) -> None:
         self.db_path = Path(db_path)
@@ -97,7 +97,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         self.allow_sqlite_vector_fallback = allow_sqlite_vector_fallback
         self.native_chunk_index = (
             self._try_native_chunk_index(self.seekdb_path)
-            if native_chunk_index is _AUTO_NATIVE_CHUNK_INDEX
+            if native_chunk_index is _AUTO_NATIVE_INDEX
             else native_chunk_index
         )
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -270,7 +270,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 self.native_chunk_index.upsert_source_chunks(source_id, chunks)
             return
 
-        if has_vector_chunks and not self.allow_sqlite_vector_fallback:
+        if chunks and not self.allow_sqlite_vector_fallback:
             raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
 
     async def get_chunks(self, source_id: str) -> list[KnowledgeChunk]:
@@ -293,17 +293,12 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             results = self.native_chunk_index.search(query_embedding, selected_source_ids, top_k)
             return await self._maybe_rerank(query, results, top_k, rerank_provider)
 
-        rows = self._chunk_rows(source_ids)
-        has_sqlite_vectors = any(row["embedding"] for row in rows)
-        if self.native_chunk_index is not None and has_sqlite_vectors and not self.allow_sqlite_vector_fallback:
+        if self.native_chunk_index is not None and not self.allow_sqlite_vector_fallback:
             raise RuntimeError("native SeekDB vector search requires query embeddings")
-        if (
-            self.native_chunk_index is None
-            and (query_embedding is not None or has_sqlite_vectors)
-            and not self.allow_sqlite_vector_fallback
-        ):
+        if self.native_chunk_index is None and not self.allow_sqlite_vector_fallback:
             raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
 
+        rows = self._chunk_rows(source_ids)
         return await self._search_sqlite_chunk_rows(query, rows, top_k, query_embedding, rerank_provider)
 
     def _current_source_ids(self) -> list[str]:

@@ -10,6 +10,10 @@ from backend.infrastructure.repositories.seekdb_repository import SeekDBReposito
 from backend.infrastructure.vector_stores.seekdb_vector_store import SeekDBVectorStore
 
 
+def sqlite_fallback_repo(path: Path) -> SeekDBRepository:
+    return SeekDBRepository(path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+
+
 def test_chonkie_chunker_returns_offsets_and_counts():
     pytest.importorskip("chonkie")
     service = ChunkingService(
@@ -37,7 +41,7 @@ async def test_seekdb_vector_store_applies_reranker(tmp_path: Path):
                 item["score"] = 10 - index
             return reranked
 
-    repo = SeekDBRepository(tmp_path / "rerank.db")
+    repo = sqlite_fallback_repo(tmp_path / "rerank.db")
     source = KnowledgeSource(
         id="source-1",
         kind=SourceKind.TEXT,
@@ -75,7 +79,7 @@ async def test_seekdb_vector_store_applies_reranker(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_seekdb_repository_uses_bm25_for_term_overlap_without_exact_phrase(tmp_path: Path):
-    repo = SeekDBRepository(tmp_path / "bm25.db")
+    repo = sqlite_fallback_repo(tmp_path / "bm25.db")
     source = KnowledgeSource(
         id="source-bm25",
         kind=SourceKind.TEXT,
