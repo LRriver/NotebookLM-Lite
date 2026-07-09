@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import sys
@@ -12,9 +13,107 @@ from fastapi.testclient import TestClient
 from backend.api.routes.sources import router as sources_router
 from backend.core.services.source_service import SourceService
 from backend.config import Settings, get_settings
+from backend.domain.source import KnowledgeChunk, KnowledgeSource, SourceKind
 from backend.dependencies import get_source_service
 from backend.infrastructure.parsers.docling_parser import DoclingParser
 from backend.infrastructure.repositories.seekdb_repository import SeekDBRepository
+
+
+class RecordingNativeIndex:
+    def __init__(self) -> None:
+        self.upserts = []
+        self.deletes = []
+        self.searches = []
+
+    def upsert_source_chunks(self, source_id, chunks):
+        self.upserts.append((source_id, chunks))
+
+    def delete_source_chunks(self, source_id, chunk_ids):
+        self.deletes.append((source_id, chunk_ids))
+
+    def search(self, query_embedding, source_ids, top_k):
+        self.searches.append((query_embedding, source_ids, top_k))
+        return [
+            {
+                "chunk": KnowledgeChunk(
+                    id="native_chunk",
+                    source_id=source_ids[0],
+                    content="native search result",
+                    chunk_index=0,
+                    embedding=[0.1, 0.2, 0.3],
+                    metadata={"source_id": source_ids[0]},
+                ),
+                "score": 0.99,
+                "backend": "seekdb",
+            }
+        ]
+
+    def status(self):
+        return {"vector_backend": "seekdb", "native_available": True}
+
+
+@pytest.mark.asyncio
+async def test_repository_uses_seekdb_native_index_for_chunk_save_and_search(tmp_path: Path, caplog):
+    native_index = RecordingNativeIndex()
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+    source = KnowledgeSource(id="src-native", kind=SourceKind.TEXT, title="Native")
+    await repo.save_source(source)
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-native",
+                source_id=source.id,
+                content="native indexed content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        results = await repo.search_chunks(
+            "native indexed",
+            source_ids=[source.id],
+            top_k=1,
+            query_embedding=[0.1, 0.2, 0.3],
+        )
+
+    assert native_index.upserts[0][0] == source.id
+    assert native_index.searches == [([0.1, 0.2, 0.3], [source.id], 1)]
+    assert results[0]["chunk"].id == "native_chunk"
+    assert "Skipping optional pyseekdb chunk mirror" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_repository_requires_native_seekdb_for_vector_save_unless_fallback_enabled(tmp_path: Path):
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=None,
+        allow_sqlite_vector_fallback=False,
+    )
+    source = KnowledgeSource(id="src-no-native", kind=SourceKind.TEXT, title="No Native")
+    await repo.save_source(source)
+
+    with pytest.raises(RuntimeError, match="native SeekDB vector index is unavailable"):
+        await repo.save_chunks(
+            source.id,
+            [
+                KnowledgeChunk(
+                    id="chunk-no-native",
+                    source_id=source.id,
+                    content="content",
+                    chunk_index=0,
+                    embedding=[0.1, 0.2, 0.3],
+                    metadata={"source_id": source.id},
+                )
+            ],
+        )
 
 
 @pytest.mark.asyncio

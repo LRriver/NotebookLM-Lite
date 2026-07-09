@@ -24,6 +24,20 @@ def test_loads_yaml_model_profiles_without_using_local_config(sample_config_file
     assert settings.output_dir == "./output-test"
 
 
+def test_seekdb_native_vector_search_is_default(monkeypatch, sample_config_file):
+    from backend.config import get_settings
+
+    monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(sample_config_file))
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+    finally:
+        get_settings.cache_clear()
+
+    assert settings.vector_store_type == "seekdb"
+    assert settings.seekdb_allow_sqlite_fallback is False
+
+
 def test_default_settings_do_not_require_local_secrets(monkeypatch):
     from backend.config import get_settings
 

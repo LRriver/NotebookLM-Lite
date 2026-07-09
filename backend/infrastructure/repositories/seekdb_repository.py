@@ -1,9 +1,8 @@
-"""SeekDB repository wrapper with embedded pyseekdb preference.
+"""SeekDB repository wrapper.
 
-The pyseekdb SDK is loaded lazily. When it is unavailable, the repository keeps
-the same durable interface on top of SQLite so development and tests remain
-deterministic while deployment can use pyseekdb embedded mode by installing the
-SDK.
+SQLite stores source and chunk payload metadata. Native SeekDB owns chunk vector
+indexing whenever embeddings are present; SQLite vector scoring is retained only
+as an explicit fallback path.
 """
 
 from __future__ import annotations
@@ -19,8 +18,14 @@ from typing import Any
 from ...core.interfaces.knowledge_repository import KnowledgeRepositoryInterface
 from ...domain.slide_deck import SlideAsset, SlideDeckExport, SlideDeckJob, SlideDeckProject
 from ...domain.source import Artifact, Job, KnowledgeChunk, KnowledgeSource, Note, SourceStatus, utc_now
+from ..vector_stores.seekdb_chunk_index import SeekDBChunkIndex
 
 logger = logging.getLogger(__name__)
+
+_AUTO_NATIVE_CHUNK_INDEX: Any = object()
+_NATIVE_UNAVAILABLE_MESSAGE = (
+    "native SeekDB vector index is unavailable; enable seekdb_allow_sqlite_fallback for SQLite fallback"
+)
 
 
 def _dump_model(model: Any) -> str:
@@ -80,23 +85,31 @@ def _bm25_scores(query: str, documents: list[str]) -> list[float]:
 
 
 class SeekDBRepository(KnowledgeRepositoryInterface):
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        native_chunk_index: object | None = _AUTO_NATIVE_CHUNK_INDEX,
+        allow_sqlite_vector_fallback: bool = False,
+    ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.seekdb_client = self._try_pyseekdb(self.db_path.parent / f"{self.db_path.stem}.seekdb")
+        self.seekdb_path = self.db_path.parent / f"{self.db_path.stem}.seekdb"
+        self.allow_sqlite_vector_fallback = allow_sqlite_vector_fallback
+        self.native_chunk_index = (
+            self._try_native_chunk_index(self.seekdb_path)
+            if native_chunk_index is _AUTO_NATIVE_CHUNK_INDEX
+            else native_chunk_index
+        )
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
-    @staticmethod
-    def _try_pyseekdb(path: Path) -> Any | None:
+    def _try_native_chunk_index(self, path: Path) -> Any | None:
         try:
-            import pyseekdb  # type: ignore
-        except Exception:
-            return None
-        try:
-            return pyseekdb.Client(path=str(path))
-        except Exception:
+            return SeekDBChunkIndex(path)
+        except Exception as exc:
+            if not self.allow_sqlite_vector_fallback:
+                logger.warning("Native SeekDB vector index is unavailable: %s", exc)
             return None
 
     def _init_schema(self) -> None:
@@ -174,6 +187,18 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
     async def close(self) -> None:
         self._conn.close()
 
+    def storage_status(self) -> dict[str, Any]:
+        if self.native_chunk_index is not None:
+            status = dict(self.native_chunk_index.status())
+            status.setdefault("seekdb_path", str(self.seekdb_path))
+            status.setdefault("native_available", True)
+            return status
+        return {
+            "vector_backend": "sqlite_fallback" if self.allow_sqlite_vector_fallback else "unavailable",
+            "seekdb_path": str(self.seekdb_path),
+            "native_available": False,
+        }
+
     async def save_source(self, source: KnowledgeSource) -> KnowledgeSource:
         self._conn.execute(
             """
@@ -207,6 +232,10 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         return [KnowledgeSource.model_validate_json(row["payload"]) for row in rows]
 
     async def delete_source(self, source_id: str) -> bool:
+        chunk_rows = self._conn.execute("SELECT id FROM chunks WHERE source_id = ?", (source_id,)).fetchall()
+        chunk_ids = [row["id"] for row in chunk_rows]
+        if self.native_chunk_index is not None:
+            self.native_chunk_index.delete_source_chunks(source_id, chunk_ids)
         self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
         self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         self._conn.commit()
@@ -233,19 +262,16 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         )
         self._conn.commit()
 
-        if self.seekdb_client is not None and chunks:  # pragma: no cover - requires SDK/runtime
-            try:
-                collection = self.seekdb_client.get_or_create_collection(name="chunks")
-                payload: dict[str, Any] = {
-                    "ids": [chunk.id for chunk in chunks],
-                    "documents": [chunk.content for chunk in chunks],
-                    "metadatas": [chunk.metadata for chunk in chunks],
-                }
-                if all(chunk.embedding is not None for chunk in chunks):
-                    payload["embeddings"] = [chunk.embedding for chunk in chunks]
-                collection.upsert(**payload)
-            except Exception as exc:
-                logger.warning("Skipping optional pyseekdb chunk mirror after save failure: %s", exc)
+        has_vector_chunks = any(chunk.embedding is not None for chunk in chunks)
+        if self.native_chunk_index is not None:
+            if chunks and has_vector_chunks:
+                self.native_chunk_index.upsert_source_chunks(source_id, chunks)
+            elif not chunks:
+                self.native_chunk_index.upsert_source_chunks(source_id, chunks)
+            return
+
+        if has_vector_chunks and not self.allow_sqlite_vector_fallback:
+            raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
 
     async def get_chunks(self, source_id: str) -> list[KnowledgeChunk]:
         rows = self._conn.execute(
@@ -262,14 +288,48 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         query_embedding: list[float] | None = None,
         rerank_provider: object | None = None,
     ) -> list[dict]:
+        if self.native_chunk_index is not None and query_embedding is not None:
+            selected_source_ids = source_ids or self._current_source_ids()
+            results = self.native_chunk_index.search(query_embedding, selected_source_ids, top_k)
+            return await self._maybe_rerank(query, results, top_k, rerank_provider)
+
+        rows = self._chunk_rows(source_ids)
+        has_sqlite_vectors = any(row["embedding"] for row in rows)
+        if self.native_chunk_index is not None and has_sqlite_vectors and not self.allow_sqlite_vector_fallback:
+            raise RuntimeError("native SeekDB vector search requires query embeddings")
+        if (
+            self.native_chunk_index is None
+            and (query_embedding is not None or has_sqlite_vectors)
+            and not self.allow_sqlite_vector_fallback
+        ):
+            raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
+
+        return await self._search_sqlite_chunk_rows(query, rows, top_k, query_embedding, rerank_provider)
+
+    def _current_source_ids(self) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT id FROM sources WHERE status != ? ORDER BY created_at DESC",
+            (SourceStatus.DELETED.value,),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    def _chunk_rows(self, source_ids: list[str] | None = None) -> list[sqlite3.Row]:
         params: list[Any] = []
         sql = "SELECT payload, content, embedding FROM chunks"
         if source_ids:
             placeholders = ",".join("?" for _ in source_ids)
             sql += f" WHERE source_id IN ({placeholders})"
             params.extend(source_ids)
-        rows = self._conn.execute(sql, params).fetchall()
+        return self._conn.execute(sql, params).fetchall()
 
+    async def _search_sqlite_chunk_rows(
+        self,
+        query: str,
+        rows: list[sqlite3.Row],
+        top_k: int,
+        query_embedding: list[float] | None,
+        rerank_provider: object | None,
+    ) -> list[dict]:
         bm25_scores = _bm25_scores(query, [row["content"] for row in rows])
         results = []
         for row, bm25_score in zip(rows, bm25_scores):
@@ -282,6 +342,15 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 results.append({"chunk": chunk, "score": score})
 
         results = sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
+        return await self._maybe_rerank(query, results, top_k, rerank_provider)
+
+    async def _maybe_rerank(
+        self,
+        query: str,
+        results: list[dict],
+        top_k: int,
+        rerank_provider: object | None,
+    ) -> list[dict]:
         if rerank_provider and results:
             try:
                 return await rerank_provider.rerank(query, results, top_k=top_k)

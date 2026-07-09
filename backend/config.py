@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     vector_store_type: Literal["chroma", "faiss", "seekdb"] = "seekdb"
     chroma_persist_dir: str = "./data/chroma"
     seekdb_path: str = "./data/seekdb.db"
+    seekdb_allow_sqlite_fallback: bool = False
     
     # 嵌入模型设置 (OpenAI API)
     embedding_model: str = "text-embedding-3-small"
@@ -138,7 +139,12 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
 
     storage = data.get("storage") or {}
     if isinstance(storage, dict):
-        for key in ("vector_store_type", "chroma_persist_dir", "seekdb_path"):
+        for key in (
+            "vector_store_type",
+            "chroma_persist_dir",
+            "seekdb_path",
+            "seekdb_allow_sqlite_fallback",
+        ):
             if key in storage:
                 flattened[key] = storage[key]
 

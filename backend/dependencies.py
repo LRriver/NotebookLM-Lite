@@ -88,7 +88,10 @@ class DependencyContainer:
         if cls._knowledge_repository is None or force_new:
             settings = settings or get_settings()
             from .infrastructure.repositories.seekdb_repository import SeekDBRepository
-            cls._knowledge_repository = SeekDBRepository(settings.seekdb_path)
+            cls._knowledge_repository = SeekDBRepository(
+                settings.seekdb_path,
+                allow_sqlite_vector_fallback=settings.seekdb_allow_sqlite_fallback,
+            )
         return cls._knowledge_repository
 
     @classmethod
