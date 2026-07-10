@@ -124,7 +124,11 @@ class FakeClient:
         self.path = path
         self.collections = {}
         self.created = []
+        self.exit_calls = 0
         FakeClient.instances.append(self)
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.exit_calls += 1
 
     def get_or_create_collection(self, name, configuration=None, embedding_function=None):
         if embedding_function is not None:
@@ -182,6 +186,16 @@ def test_upsert_creates_dimensioned_source_collection(tmp_path: Path):
     assert collection.upsert_calls[0]["metadatas"][0]["source_id"] == "source-a"
     assert "payload" in collection.upsert_calls[0]["metadatas"][0]
     assert collection.refresh_calls == 1
+
+
+def test_close_releases_native_client_once(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    client = FakeClient.instances[0]
+
+    index.close()
+    index.close()
+
+    assert client.exit_calls == 1
 
 
 def test_search_queries_seekdb_collections_and_reconstructs_chunks(tmp_path: Path):
@@ -561,13 +575,12 @@ def run_real_pyseekdb_subprocess(script: str) -> None:
     env["PYTHONPATH"] = os.pathsep.join(
         value for value in [str(repo_root), env.get("PYTHONPATH", "")] if value
     )
-    subprocess_script = textwrap.dedent(
+    subprocess_prelude = textwrap.dedent(
         """
         try:
             import pyseekdb  # noqa: F401
         except Exception:
-            print("PYSEEKDB_UNAVAILABLE")
-            raise SystemExit(0)
+            raise SystemExit(77)
 
         from backend.domain.source import KnowledgeChunk
         from backend.infrastructure.vector_stores.seekdb_chunk_index import SeekDBChunkIndex
@@ -583,22 +596,26 @@ def run_real_pyseekdb_subprocess(script: str) -> None:
                 metadata=metadata if metadata is not None else {"source_id": source_id},
             )
         """
-    ) + "\n" + textwrap.dedent(script)
+    )
+    subprocess_script = (
+        subprocess_prelude
+        + "\nindex = None\ntry:\n"
+        + textwrap.indent(textwrap.dedent(script), "    ")
+        + "\nfinally:\n    if index is not None:\n        index.close()\n"
+    )
     try:
         completed = subprocess.run(
             [sys.executable, "-c", subprocess_script],
             cwd=repo_root,
             env=env,
-            capture_output=True,
-            text=True,
             timeout=60,
             check=False,
         )
     except subprocess.TimeoutExpired:
         pytest.skip("real pyseekdb subprocess timed out after 60 seconds")
-    if "PYSEEKDB_UNAVAILABLE" in completed.stdout:
+    if completed.returncode == 77:
         pytest.skip("pyseekdb is unavailable in subprocess")
-    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.returncode == 0
 
 
 def test_real_pyseekdb_upsert_refresh_and_query_round_trip(tmp_path: Path):

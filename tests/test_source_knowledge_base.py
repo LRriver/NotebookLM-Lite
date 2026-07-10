@@ -224,6 +224,22 @@ class FailOnceNativeIndex(RecordingNativeIndex):
         super().upsert_source_chunks(source_id, chunks)
 
 
+class PartialWriteAndRestoreFailingNativeIndex(RecordingNativeIndex):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 0
+
+    def upsert_source_chunks(self, source_id, chunks):
+        if self.failures_remaining == 2:
+            self.failures_remaining -= 1
+            self.chunks_by_source[source_id] = list(chunks)
+            raise RuntimeError("partial native write")
+        if self.failures_remaining == 1:
+            self.failures_remaining -= 1
+            raise RuntimeError("native restore failed")
+        super().upsert_source_chunks(source_id, chunks)
+
+
 class DimensionCheckingNativeIndex(RecordingNativeIndex):
     def search(self, query_embedding, source_ids, top_k):
         bad_source_ids = [
@@ -374,6 +390,56 @@ async def test_pending_seekdb_replace_is_recovered_after_process_interruption(
 
     assert [item.id for item in await recovered.get_chunks(source.id)] == [chunk.id]
     assert [item.id for item in recovered._get_sqlite_chunks_sync(source.id)] == [chunk.id]
+    assert recovered._conn.execute("SELECT COUNT(*) FROM chunk_sync_operations").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_native_compensation_keeps_a_durable_restore_operation(tmp_path: Path):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-restore-retry", kind=SourceKind.TEXT, title="Restore retry")
+    old_chunk = KnowledgeChunk(
+        id="chunk-old-restore-retry",
+        source_id=source.id,
+        content="old canonical content",
+        chunk_index=0,
+        embedding=[0.4, 0.5, 0.6],
+        metadata={"source_id": source.id},
+    )
+    new_chunk = KnowledgeChunk(
+        id="chunk-new-restore-retry",
+        source_id=source.id,
+        content="partially written content",
+        chunk_index=0,
+        embedding=[0.1, 0.2, 0.3],
+        metadata={"source_id": source.id},
+    )
+    native_index = PartialWriteAndRestoreFailingNativeIndex()
+    repo = SeekDBRepository(db_path, native_chunk_index=native_index, allow_sqlite_vector_fallback=False)
+    await repo.save_source(source)
+    await repo.save_chunks(source.id, [old_chunk])
+    native_index.failures_remaining = 2
+
+    with pytest.raises(RuntimeError, match="partial native write"):
+        await repo.save_chunks(source.id, [new_chunk])
+
+    pending = repo._conn.execute(
+        "SELECT operation FROM chunk_sync_operations WHERE source_id = ?",
+        (source.id,),
+    ).fetchone()
+    assert pending["operation"] == "native_restore"
+    assert [chunk.id for chunk in native_index.get_source_chunks(source.id)] == [new_chunk.id]
+    assert [chunk.id for chunk in repo._get_sqlite_chunks_sync(source.id)] == [old_chunk.id]
+    await repo.close()
+
+    recovered = SeekDBRepository(
+        db_path,
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+    await recovered.initialize_storage()
+
+    assert [chunk.id for chunk in native_index.get_source_chunks(source.id)] == [old_chunk.id]
+    assert [chunk.id for chunk in recovered._get_sqlite_chunks_sync(source.id)] == [old_chunk.id]
     assert recovered._conn.execute("SELECT COUNT(*) FROM chunk_sync_operations").fetchone()[0] == 0
 
 
@@ -1118,8 +1184,54 @@ async def test_repository_backfill_clears_stale_native_for_fallback_rows_without
         "SELECT vector_state FROM chunks WHERE source_id = ?",
         (source.id,),
     ).fetchone()["vector_state"]
-    assert state == "sqlite_fallback_reconciled"
-    assert results == []
+    assert state == "legacy_needs_embedding"
+    assert results[0]["chunk"].id == "chunk-plain"
+    assert results[0]["backend"] == "sqlite_legacy_text"
+
+
+@pytest.mark.asyncio
+async def test_strict_backfill_keeps_unembedded_legacy_sources_lexically_searchable_and_retryable(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-legacy-lexical", kind=SourceKind.TEXT, title="Legacy lexical")
+    fallback_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await fallback_repo.save_source(source)
+    await fallback_repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-legacy-lexical",
+                source_id=source.id,
+                content="Asterion protocol preserves lexical retrieval",
+                chunk_index=0,
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+    await fallback_repo.close()
+
+    repo = SeekDBRepository(
+        db_path,
+        native_chunk_index=RecordingNativeIndex(),
+        allow_sqlite_vector_fallback=False,
+    )
+    await repo.initialize_storage()
+    results = await repo.search_chunks(
+        "Asterion protocol",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[0.1, 0.2, 0.3],
+    )
+
+    assert results[0]["chunk"].id == "chunk-legacy-lexical"
+    assert results[0]["backend"] == "sqlite_legacy_text"
+    state = repo._conn.execute(
+        "SELECT storage_mode FROM chunk_index_state WHERE source_id = ?",
+        (source.id,),
+    ).fetchone()
+    assert state["storage_mode"] == "sqlite_legacy"
+    assert repo._get_repository_meta("native_chunk_migration_v2") is None
 
 
 @pytest.mark.asyncio
@@ -1216,7 +1328,8 @@ async def test_repository_backfill_skips_partially_embedded_sources_and_native_s
     assert written == 0
     assert native_index.upserts == [(source.id, [])]
     assert native_index.searches == []
-    assert results == []
+    assert results[0]["chunk"].source_id == source.id
+    assert results[0]["backend"] == "sqlite_legacy_text"
 
 
 @pytest.mark.asyncio
@@ -1298,7 +1411,8 @@ async def test_repository_backfill_treats_empty_embedding_as_native_ineligible(t
     assert written == 0
     assert native_index.upserts == [(source.id, [])]
     assert native_index.searches == []
-    assert results == []
+    assert results[0]["chunk"].id == "chunk-empty-embedding"
+    assert results[0]["backend"] == "sqlite_legacy_text"
 
 
 @pytest.mark.asyncio

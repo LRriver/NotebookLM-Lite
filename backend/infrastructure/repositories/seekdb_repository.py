@@ -106,6 +106,8 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
         self._storage_initialized = False
+        self._migration_has_unresolved_sources = False
+        self._closed = False
 
     def _try_native_chunk_index(self, path: Path) -> Any | None:
         try:
@@ -215,7 +217,18 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         self._conn.commit()
 
     async def close(self) -> None:
-        self._conn.close()
+        self.close_sync()
+
+    def close_sync(self) -> None:
+        if self._closed:
+            return
+        try:
+            close_native = getattr(self.native_chunk_index, "close", None)
+            if callable(close_native):
+                close_native()
+        finally:
+            self._conn.close()
+        self._closed = True
 
     def storage_status(self) -> dict[str, Any]:
         if self.native_chunk_index is not None:
@@ -284,12 +297,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             self.native_chunk_index.upsert_source_chunks(source_id, [])
             self._finalize_source_delete(source_id, revision)
         except Exception:
-            if previous_native_chunks is not None:
-                try:
-                    self.native_chunk_index.upsert_source_chunks(source_id, previous_native_chunks)
-                except Exception:
-                    logger.exception("Failed to restore SeekDB chunks after a source delete failure")
-            self._discard_sync_operation(source_id, revision)
+            self._compensate_native_failure(source_id, revision, previous_native_chunks)
             raise
         return True
 
@@ -352,12 +360,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 persist_embedding=persist_embedding,
             )
         except Exception:
-            if previous_native_chunks is not None:
-                try:
-                    self.native_chunk_index.upsert_source_chunks(source_id, previous_native_chunks)
-                except Exception:
-                    logger.exception("Failed to restore SeekDB chunks after a metadata transaction failure")
-            self._discard_sync_operation(source_id, revision)
+            self._compensate_native_failure(source_id, revision, previous_native_chunks)
             raise
 
     async def get_chunks(self, source_id: str) -> list[KnowledgeChunk]:
@@ -384,8 +387,8 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
 
         self._recover_pending_sync_operations()
         written = self._backfill_native_chunks_sync()
-        if not self.allow_sqlite_vector_fallback:
-            self._set_repository_meta("native_chunk_migration_v1", "complete")
+        if not self.allow_sqlite_vector_fallback and not self._migration_has_unresolved_sources:
+            self._set_repository_meta("native_chunk_migration_v2", "complete")
         self._storage_initialized = True
         return written
 
@@ -397,10 +400,11 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         written = 0
         if (
             not self.allow_sqlite_vector_fallback
-            and self._get_repository_meta("native_chunk_migration_v1") != "complete"
+            and self._get_repository_meta("native_chunk_migration_v2") != "complete"
         ):
             written = self._backfill_native_chunks_sync()
-            self._set_repository_meta("native_chunk_migration_v1", "complete")
+            if not self._migration_has_unresolved_sources:
+                self._set_repository_meta("native_chunk_migration_v2", "complete")
         self._storage_initialized = True
         return written
 
@@ -410,6 +414,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
 
     def _backfill_native_chunks_sync(self) -> int:
         written = 0
+        self._migration_has_unresolved_sources = False
         source_rows = self._conn.execute(
             "SELECT payload FROM sources WHERE status != ? ORDER BY created_at DESC",
             (SourceStatus.DELETED.value,),
@@ -430,12 +435,17 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                         storage_mode="seekdb",
                     )
                 continue
-            reconciled_states = {"seekdb", "sqlite_fallback_reconciled"}
+            reconciled_states = {"seekdb"}
+            if self.allow_sqlite_vector_fallback:
+                reconciled_states.add("sqlite_fallback_reconciled")
             state_row = self._conn.execute(
                 "SELECT source_id FROM chunk_index_state WHERE source_id = ?",
                 (source.id,),
             ).fetchone()
             if state_row and all(row["vector_state"] in reconciled_states for row in sqlite_rows):
+                continue
+            if state_row and all(row["vector_state"] == "legacy_needs_embedding" for row in sqlite_rows):
+                self._migration_has_unresolved_sources = True
                 continue
             chunks_with_embeddings = self._native_eligible_chunks(chunks)
             get_native_chunks = getattr(self.native_chunk_index, "get_source_chunks", None)
@@ -458,10 +468,20 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                         )
                     continue
                 logger.warning(
-                    "Clearing stale native chunks for fallback source %s because embeddings are missing or inconsistent",
+                    "Legacy source %s has missing or inconsistent embeddings",
                     source.id,
                 )
                 revision = uuid4().hex
+                if not self.allow_sqlite_vector_fallback:
+                    self._migration_has_unresolved_sources = True
+                    self._record_sync_operation(source.id, revision, "legacy_clear", None)
+                    try:
+                        self.native_chunk_index.upsert_source_chunks(source.id, [])
+                        self._finalize_legacy_source(source.id, revision, chunks)
+                    except Exception:
+                        self._compensate_native_failure(source.id, revision, previous_native_chunks)
+                        raise
+                    continue
                 self._record_sync_operation(
                     source.id,
                     revision,
@@ -479,12 +499,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                         vector_state="sqlite_fallback_reconciled",
                     )
                 except Exception:
-                    if previous_native_chunks is not None:
-                        try:
-                            self.native_chunk_index.upsert_source_chunks(source.id, previous_native_chunks)
-                        except Exception:
-                            logger.exception("Failed to restore SeekDB chunks after a backfill clear failure")
-                    self._discard_sync_operation(source.id, revision)
+                    self._compensate_native_failure(source.id, revision, previous_native_chunks)
                     raise
                 continue
             revision = uuid4().hex
@@ -512,12 +527,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                         persist_embedding=persist_embedding,
                     )
             except Exception:
-                if previous_native_chunks is not None:
-                    try:
-                        self.native_chunk_index.upsert_source_chunks(source.id, previous_native_chunks)
-                    except Exception:
-                        logger.exception("Failed to restore SeekDB chunks after a backfill failure")
-                self._discard_sync_operation(source.id, revision)
+                self._compensate_native_failure(source.id, revision, previous_native_chunks)
                 raise
             written += len(chunks_with_embeddings)
         return written
@@ -567,6 +577,19 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                             None,
                         )
                     )
+            else:
+                legacy_source_ids = self._legacy_source_ids(requested_source_ids)
+                if legacy_source_ids:
+                    legacy_results = await self._search_sqlite_chunk_rows(
+                        query,
+                        self._chunk_rows(legacy_source_ids),
+                        top_k,
+                        None,
+                        None,
+                    )
+                    for result in legacy_results:
+                        result["backend"] = "sqlite_legacy_text"
+                    results.extend(legacy_results)
             results = sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
             return await self._maybe_rerank(query_text, results, top_k, rerank_provider)
         if self.native_chunk_index is not None and query_embedding is not None:
@@ -610,6 +633,19 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                         None,
                     )
                     results.extend(fallback_results)
+            else:
+                legacy_source_ids = self._legacy_source_ids(requested_source_ids)
+                if legacy_source_ids:
+                    legacy_results = await self._search_sqlite_chunk_rows(
+                        query,
+                        self._chunk_rows(legacy_source_ids),
+                        top_k,
+                        None,
+                        None,
+                    )
+                    for result in legacy_results:
+                        result["backend"] = "sqlite_legacy_text"
+                    results.extend(legacy_results)
             results = sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
             return await self._maybe_rerank(query, results, top_k, rerank_provider)
 
@@ -664,6 +700,16 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             and states[source_id]["chunk_count"] > 0
         ]
 
+    def _legacy_source_ids(self, source_ids: list[str]) -> list[str]:
+        states = self._chunk_index_states(source_ids)
+        return [
+            source_id
+            for source_id in source_ids
+            if source_id in states
+            and states[source_id]["storage_mode"] == "sqlite_legacy"
+            and states[source_id]["chunk_count"] > 0
+        ]
+
     def _record_sync_operation(
         self,
         source_id: str,
@@ -694,6 +740,39 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 )
         except Exception:
             logger.exception("Failed to discard completed chunk sync operation for %s", source_id)
+
+    def _compensate_native_failure(
+        self,
+        source_id: str,
+        revision: str,
+        previous_native_chunks: list[KnowledgeChunk] | None,
+    ) -> None:
+        if previous_native_chunks is None:
+            logger.error(
+                "Cannot restore SeekDB source %s because its previous state is unavailable; "
+                "the original sync operation remains pending",
+                source_id,
+            )
+            return
+        try:
+            self._record_sync_operation(
+                source_id,
+                revision,
+                "native_restore",
+                json.dumps([chunk.model_dump_json() for chunk in previous_native_chunks]),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist native restore operation for %s; original operation remains pending",
+                source_id,
+            )
+            return
+        try:
+            self.native_chunk_index.upsert_source_chunks(source_id, previous_native_chunks)
+        except Exception:
+            logger.exception("Failed to restore SeekDB chunks for %s; restore remains pending", source_id)
+            return
+        self._discard_sync_operation(source_id, revision)
 
     @staticmethod
     def _replacement_operation_payload(
@@ -749,6 +828,15 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             elif row["operation"] == "delete":
                 self.native_chunk_index.upsert_source_chunks(source_id, [])
                 self._finalize_source_delete(source_id, revision)
+            elif row["operation"] == "native_restore":
+                payload = json.loads(row["payload"] or "[]")
+                chunks = [KnowledgeChunk.model_validate_json(item) for item in payload]
+                self.native_chunk_index.upsert_source_chunks(source_id, chunks)
+                self._discard_sync_operation(source_id, revision)
+            elif row["operation"] == "legacy_clear":
+                chunks = self._get_sqlite_chunks_sync(source_id)
+                self.native_chunk_index.upsert_source_chunks(source_id, [])
+                self._finalize_legacy_source(source_id, revision, chunks)
             else:
                 raise ValueError(f"Unknown chunk sync operation: {row['operation']}")
 
@@ -815,6 +903,28 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 revision,
                 chunks,
                 storage_mode="seekdb",
+            )
+            self._conn.execute(
+                "DELETE FROM chunk_sync_operations WHERE source_id = ? AND revision = ?",
+                (source_id, revision),
+            )
+
+    def _finalize_legacy_source(
+        self,
+        source_id: str,
+        revision: str,
+        chunks: list[KnowledgeChunk],
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE chunks SET vector_state = 'legacy_needs_embedding' WHERE source_id = ?",
+                (source_id,),
+            )
+            self._upsert_chunk_index_state(
+                source_id,
+                revision,
+                chunks,
+                storage_mode="sqlite_legacy",
             )
             self._conn.execute(
                 "DELETE FROM chunk_sync_operations WHERE source_id = ? AND revision = ?",

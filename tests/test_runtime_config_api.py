@@ -87,6 +87,52 @@ def test_runtime_cache_reset_recreates_knowledge_repository_with_new_storage_set
         DependencyContainer.reset_runtime_caches()
 
 
+def test_runtime_cache_reset_closes_cached_repository():
+    class ClosableRepository:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close_sync(self) -> None:
+            self.close_calls += 1
+
+    repository = ClosableRepository()
+    DependencyContainer._knowledge_repository = repository
+
+    DependencyContainer.reset_runtime_caches()
+
+    assert repository.close_calls == 1
+    assert DependencyContainer._knowledge_repository is None
+
+
+def test_force_new_repository_closes_old_repository_and_invalidates_dependents(monkeypatch):
+    class ClosableRepository:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.close_calls = 0
+
+        def close_sync(self) -> None:
+            self.close_calls += 1
+
+    old_repository = ClosableRepository()
+    DependencyContainer._knowledge_repository = old_repository
+    DependencyContainer._vector_store = object()
+    DependencyContainer._slide_deck_service = object()
+    monkeypatch.setattr(
+        "backend.infrastructure.repositories.seekdb_repository.SeekDBRepository",
+        ClosableRepository,
+    )
+
+    new_repository = DependencyContainer.get_knowledge_repository(
+        settings=Settings(seekdb_allow_sqlite_fallback=True),
+        force_new=True,
+    )
+
+    assert new_repository is not old_repository
+    assert old_repository.close_calls == 1
+    assert DependencyContainer._vector_store is None
+    assert DependencyContainer._slide_deck_service is None
+    DependencyContainer.reset_runtime_caches()
+
+
 def test_runtime_config_exposes_actual_vector_backend(monkeypatch, sample_config_file):
     monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(sample_config_file))
     monkeypatch.setattr(

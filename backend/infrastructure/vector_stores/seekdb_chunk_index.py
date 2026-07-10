@@ -23,11 +23,20 @@ class SeekDBChunkIndex:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
+        self._closed = False
         try:
             self.pyseekdb = importlib.import_module("pyseekdb")
             self.client = self.pyseekdb.Client(path=str(self.path))
         except Exception as exc:
             raise SeekDBUnavailableError("Native SeekDB chunk index is unavailable") from exc
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        client_exit = getattr(self.client, "__exit__", None)
+        if callable(client_exit):
+            client_exit(None, None, None)
+        self._closed = True
 
     def collection_name(self, source_id: str) -> str:
         digest = hashlib.sha1(source_id.encode("utf-8")).hexdigest()[:16]

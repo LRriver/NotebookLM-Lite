@@ -25,9 +25,13 @@ class DependencyContainer:
     def reset_runtime_caches(cls) -> None:
         """Drop cached services that depend on model settings."""
 
+        repository = cls._knowledge_repository
         cls._vector_store = None
         cls._knowledge_repository = None
         cls._slide_deck_service = None
+        close_repository = getattr(repository, "close_sync", None)
+        if callable(close_repository):
+            close_repository()
     
     @classmethod
     def get_vector_store(
@@ -87,6 +91,12 @@ class DependencyContainer:
         force_new: bool = False,
     ) -> KnowledgeRepositoryInterface:
         if cls._knowledge_repository is None or force_new:
+            if force_new and cls._knowledge_repository is not None:
+                cls._vector_store = None
+                cls._slide_deck_service = None
+                close_repository = getattr(cls._knowledge_repository, "close_sync", None)
+                if callable(close_repository):
+                    close_repository()
             settings = settings or get_settings()
             from .infrastructure.repositories.seekdb_repository import SeekDBRepository
             cls._knowledge_repository = SeekDBRepository(
