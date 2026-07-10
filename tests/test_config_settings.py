@@ -15,13 +15,27 @@ def test_loads_yaml_model_profiles_without_using_local_config(sample_config_file
     assert settings.api.models.audio_model.response_format == "mp3"
     assert settings.api.models.audio_model.stream is True
     assert settings.vector_store_type == "seekdb"
-    assert settings.seekdb_path == "./data/test_seekdb.db"
+    assert settings.seekdb_path.endswith("/data/test_seekdb.db")
     assert settings.chunk_size == 512
     assert settings.chunk_overlap == 64
     assert settings.chunking.provider == "chonkie"
     assert settings.chunking.tokenizer == "character"
     assert settings.upload_dir == "./uploads-test"
     assert settings.output_dir == "./output-test"
+
+
+def test_seekdb_native_vector_search_is_default(monkeypatch, sample_config_file):
+    from backend.config import get_settings
+
+    monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(sample_config_file))
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+    finally:
+        get_settings.cache_clear()
+
+    assert settings.vector_store_type == "seekdb"
+    assert settings.seekdb_allow_sqlite_fallback is False
 
 
 def test_default_settings_do_not_require_local_secrets(monkeypatch):

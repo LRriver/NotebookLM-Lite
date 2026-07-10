@@ -99,7 +99,8 @@ backend/
 - Python 3.10+
 - Node.js 18+
 - 一个可用的文本模型接口
-- 可选：embedding、rerank、语音模型接口
+- 默认严格 SeekDB 模式下需要可用的 embedding 接口
+- 可选：rerank、语音模型接口
 
 ### 后端
 
@@ -111,15 +112,18 @@ cp config_example.yaml config.yaml
 编辑 `config.yaml`，填写模型与存储配置：
 
 - `api.models.text_model`：聊天、RAG 回答、Studio artifact、播客脚本
-- `api.models.embedding_model`：可选向量召回
+- `api.models.embedding_model`：当 `seekdb_allow_sqlite_fallback` 为 `false` 时，文档摄取与向量召回必填
 - `api.models.rerank_model`：可选 rerank
 - `api.models.audio_model`：可选语音/音频生成
 - `api.models.image_model`：Slide Deck 图片生成
 - `api.models.edit_model`：单页图片编辑
-- `storage.seekdb_path`：本地知识库路径
+- `storage.seekdb_path`：本地 repository 基础路径；SQLite 保存业务元数据，原生 SeekDB 在相邻目录保存 chunk 向量与检索索引
+- `storage.seekdb_allow_sqlite_fallback`：仅用于兼容的 SQLite 检索回退；保持 `false` 时 SeekDB 是检索权威存储
 - `documents.chunking`：Chonkie/simple chunk 参数
 
 `config.yaml` 只用于本地运行，已被 git 忽略，不要提交真实 key。
+
+已有 source 完成索引后，运行时配置接口会拒绝修改 embedding 模型、adapter 或 base URL，避免用不兼容的新查询向量检索旧索引。需要先删除并重新导入 source；仅轮换 API key 不需要重建索引。
 
 启动后端：
 

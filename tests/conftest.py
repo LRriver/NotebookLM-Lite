@@ -10,7 +10,7 @@ import pytest
 def sample_config_file(tmp_path: Path) -> Path:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        """
+        f"""
 api:
   models:
     text_model:
@@ -49,7 +49,7 @@ api:
       adapter: raw_chat_multimodal
 storage:
   vector_store_type: seekdb
-  seekdb_path: ./data/test_seekdb.db
+  seekdb_path: {tmp_path / "data" / "test_seekdb.db"}
 documents:
   chunk_size: 512
   chunk_overlap: 64

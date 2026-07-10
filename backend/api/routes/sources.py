@@ -45,6 +45,11 @@ def _detail(source: KnowledgeSource) -> SourceDetail:
     return SourceDetail(**_info(source).model_dump(), text=source.text)
 
 
+def _raise_if_failed(source: KnowledgeSource) -> None:
+    if source.status.value == "error":
+        raise HTTPException(status_code=422, detail=source.error or "Source ingestion failed")
+
+
 @router.post("/text", response_model=SourceDetail)
 async def create_text_source(
     request: SourceCreateTextRequest,
@@ -55,6 +60,7 @@ async def create_text_source(
         text=request.text,
         metadata=request.metadata,
     )
+    _raise_if_failed(source)
     return _detail(source)
 
 
@@ -76,7 +82,12 @@ async def upload_source(
             filename=filename,
             mime_type=file.content_type,
         )
+        _raise_if_failed(source)
         return _detail(source)
+    except HTTPException:
+        if file_path.exists():
+            file_path.unlink()
+        raise
     except Exception as exc:
         if file_path.exists():
             file_path.unlink()

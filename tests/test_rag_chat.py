@@ -15,6 +15,10 @@ from backend.infrastructure.repositories.seekdb_repository import SeekDBReposito
 from backend.infrastructure.vector_stores.seekdb_vector_store import SeekDBVectorStore
 
 
+def sqlite_fallback_repo(path) -> SeekDBRepository:
+    return SeekDBRepository(path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+
+
 class EchoLLM:
     async def generate_with_context(self, query, context, system_prompt=None, **kwargs):
         return f"answer: {query} :: {context[0]}"
@@ -60,7 +64,7 @@ class BadStreamingContextualizer(StreamingLLM):
 
 @pytest.mark.asyncio
 async def test_rag_retrieval_is_restricted_to_selected_sources(tmp_path):
-    repo = SeekDBRepository(tmp_path / "rag.db")
+    repo = sqlite_fallback_repo(tmp_path / "rag.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     first = await service.create_text_source("First", "Alpha selected material.")
     second = await service.create_text_source("Second", "Alpha forbidden material.")
@@ -76,7 +80,7 @@ async def test_rag_retrieval_is_restricted_to_selected_sources(tmp_path):
 
 
 def test_chat_api_rejects_empty_sources_and_can_save_answer(tmp_path):
-    repo = SeekDBRepository(tmp_path / "api-rag.db")
+    repo = sqlite_fallback_repo(tmp_path / "api-rag.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     store = SeekDBVectorStore(repo)
 
@@ -92,7 +96,7 @@ def test_chat_api_rejects_empty_sources_and_can_save_answer(tmp_path):
 
 
 def test_chat_api_returns_citations_and_save_answer_as_source(tmp_path):
-    repo = SeekDBRepository(tmp_path / "api-rag-save.db")
+    repo = sqlite_fallback_repo(tmp_path / "api-rag-save.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     store = SeekDBVectorStore(repo)
     source = asyncio.run(asyncio_create_source(service))
@@ -118,7 +122,7 @@ def test_chat_api_returns_citations_and_save_answer_as_source(tmp_path):
 
 
 def test_chat_api_streams_answer_deltas_and_final_citations(tmp_path):
-    repo = SeekDBRepository(tmp_path / "api-rag-stream.db")
+    repo = sqlite_fallback_repo(tmp_path / "api-rag-stream.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     store = SeekDBVectorStore(repo)
     source = asyncio.run(asyncio_create_source(service))
@@ -145,7 +149,7 @@ def test_chat_api_streams_answer_deltas_and_final_citations(tmp_path):
 
 
 def test_chat_api_stream_falls_back_to_original_query_when_contextualized_retrieval_misses(tmp_path):
-    repo = SeekDBRepository(tmp_path / "api-rag-stream-fallback.db")
+    repo = sqlite_fallback_repo(tmp_path / "api-rag-stream-fallback.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     store = SeekDBVectorStore(repo)
     source = asyncio.run(asyncio_create_source(service))
@@ -176,7 +180,7 @@ def test_chat_api_stream_falls_back_to_original_query_when_contextualized_retrie
 
 @pytest.mark.asyncio
 async def test_rag_no_results_and_follow_up_stay_source_scoped(tmp_path):
-    repo = SeekDBRepository(tmp_path / "rag-follow-up.db")
+    repo = sqlite_fallback_repo(tmp_path / "rag-follow-up.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     source = await service.create_text_source("Follow", "Beta follow up material.")
     await service.create_text_source("Other", "Beta forbidden follow up material.")
@@ -199,7 +203,7 @@ async def test_rag_no_results_and_follow_up_stay_source_scoped(tmp_path):
 
 @pytest.mark.asyncio
 async def test_rag_multi_turn_uses_contextualized_query_only_for_retrieval(tmp_path):
-    repo = SeekDBRepository(tmp_path / "rag-follow-up-original.db")
+    repo = sqlite_fallback_repo(tmp_path / "rag-follow-up-original.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     source = await service.create_text_source("Follow", "Alpha standalone retrieval material.")
     store = SeekDBVectorStore(repo)
@@ -220,7 +224,7 @@ async def test_rag_multi_turn_uses_contextualized_query_only_for_retrieval(tmp_p
 
 @pytest.mark.asyncio
 async def test_rag_context_labels_sources_for_normal_user_file_comparison(tmp_path):
-    repo = SeekDBRepository(tmp_path / "rag-source-labels.db")
+    repo = sqlite_fallback_repo(tmp_path / "rag-source-labels.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     pdf_source = await service.create_text_source(
         "HTTPS.pdf",
@@ -247,7 +251,7 @@ async def test_rag_context_labels_sources_for_normal_user_file_comparison(tmp_pa
 
 @pytest.mark.asyncio
 async def test_rag_file_overview_includes_every_selected_source_even_when_bm25_matches_one_source(tmp_path):
-    repo = SeekDBRepository(tmp_path / "rag-overview-balanced.db")
+    repo = sqlite_fallback_repo(tmp_path / "rag-overview-balanced.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     pdf_source = await service.create_text_source(
         "HTTPS.pdf",
@@ -274,7 +278,7 @@ async def test_rag_file_overview_includes_every_selected_source_even_when_bm25_m
 
 @pytest.mark.asyncio
 async def test_rag_file_overview_includes_every_selected_source_when_top_k_is_smaller(tmp_path):
-    repo = SeekDBRepository(tmp_path / "rag-overview-all-sources.db")
+    repo = sqlite_fallback_repo(tmp_path / "rag-overview-all-sources.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     sources = [
         await service.create_text_source(f"Source {index}", f"Source {index} overview material.")
@@ -297,7 +301,7 @@ async def test_rag_file_overview_includes_every_selected_source_when_top_k_is_sm
 
 @pytest.mark.asyncio
 async def test_rag_balances_context_across_selected_sources_for_cross_source_questions(tmp_path):
-    repo = SeekDBRepository(tmp_path / "rag-cross-source-balanced.db")
+    repo = sqlite_fallback_repo(tmp_path / "rag-cross-source-balanced.db")
     service = SourceService(repository=repo, parser=DoclingParser(), chunk_size=128, chunk_overlap=0)
     pdf_source = await service.create_text_source(
         "HTTPS.pdf",
@@ -324,7 +328,7 @@ async def test_rag_balances_context_across_selected_sources_for_cross_source_que
 
 @pytest.mark.asyncio
 async def test_rag_targeted_summary_uses_retrieval_instead_of_first_chunks(tmp_path):
-    repo = SeekDBRepository(tmp_path / "rag-targeted-summary.db")
+    repo = sqlite_fallback_repo(tmp_path / "rag-targeted-summary.db")
     source = KnowledgeSource(
         kind=SourceKind.FILE,
         title="HTTPS.pdf",

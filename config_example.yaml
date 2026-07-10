@@ -48,6 +48,7 @@ api:
 storage:
   vector_store_type: "seekdb"
   seekdb_path: "./data/seekdb.db"
+  seekdb_allow_sqlite_fallback: false
   chroma_persist_dir: "./data/chroma"
 
 documents:

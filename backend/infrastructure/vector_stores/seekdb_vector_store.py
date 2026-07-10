@@ -28,7 +28,10 @@ class SeekDBVectorStore(VectorStoreInterface):
         chunks: list[dict[str, Any]],
         embeddings: Optional[list[list[float]]] = None,
     ) -> None:
+        self._validate_strict_native_write(chunks, embeddings)
+
         existing = await self.repository.get_source(doc_id)
+        created_source = existing is None
         if existing is None:
             existing = KnowledgeSource(
                 id=doc_id,
@@ -51,7 +54,41 @@ class SeekDBVectorStore(VectorStoreInterface):
                     metadata={"source_id": doc_id, "chunk_index": index, **metadata},
                 )
             )
-        await self.repository.save_chunks(doc_id, knowledge_chunks)
+        try:
+            await self.repository.save_chunks(doc_id, knowledge_chunks)
+        except Exception:
+            if created_source:
+                await self._rollback_created_source(doc_id)
+            raise
+
+    def _validate_strict_native_write(
+        self,
+        chunks: list[dict[str, Any]],
+        embeddings: Optional[list[list[float]]],
+    ) -> None:
+        if getattr(self.repository, "allow_sqlite_vector_fallback", True):
+            return
+        if getattr(self.repository, "native_chunk_index", None) is None:
+            raise RuntimeError(
+                "native SeekDB vector index is unavailable; "
+                "enable seekdb_allow_sqlite_fallback for SQLite fallback"
+            )
+        if not chunks:
+            return
+
+        provided_embeddings = embeddings or []
+        has_missing_embedding = len(provided_embeddings) < len(chunks) or any(
+            embedding is None or len(embedding) == 0 for embedding in provided_embeddings[: len(chunks)]
+        )
+        if has_missing_embedding:
+            raise RuntimeError("native SeekDB chunk writes require embeddings for all chunks")
+
+    async def _rollback_created_source(self, doc_id: str) -> None:
+        rollback_metadata = getattr(self.repository, "delete_source_metadata_only", None)
+        if rollback_metadata is not None:
+            await rollback_metadata(doc_id)
+            return
+        await self.repository.delete_source(doc_id)
 
     async def search(
         self,
@@ -95,7 +132,27 @@ class SeekDBVectorStore(VectorStoreInterface):
             for chunk in chunks
         ]
 
+    def storage_status(self) -> dict[str, Any]:
+        repository_status = getattr(self.repository, "storage_status", None)
+        if callable(repository_status):
+            return repository_status()
+        return {"vector_backend": "unknown", "native_available": False}
+
     async def get_stats(self) -> dict[str, Any]:
+        initialize_storage = getattr(self.repository, "initialize_storage", None)
+        if callable(initialize_storage):
+            await initialize_storage()
         sources = await self.repository.list_sources()
         chunk_count = sum(source.chunk_count for source in sources)
-        return {"total_documents": len(sources), "total_chunks": chunk_count, "backend": "seekdb"}
+        indexed_chunk_count = getattr(self.repository, "indexed_vector_chunk_count", None)
+        indexed_vector_chunks = (
+            indexed_chunk_count() if callable(indexed_chunk_count) else chunk_count
+        )
+        status = self.storage_status()
+        return {
+            "total_documents": len(sources),
+            "total_chunks": chunk_count,
+            "indexed_vector_chunks": indexed_vector_chunks,
+            "backend": status.get("vector_backend", "unknown"),
+            "storage": status,
+        }

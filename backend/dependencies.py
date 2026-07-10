@@ -6,7 +6,7 @@ Enables easy testing and swapping of implementations.
 """
 from typing import Any, Optional
 
-from .config import ModelProfile, Settings, get_settings
+from .config import ModelProfile, Settings, get_settings, model_profile_identity
 from .core.interfaces.vector_store import VectorStoreInterface
 from .core.interfaces.knowledge_repository import KnowledgeRepositoryInterface
 from .core.interfaces.llm_provider import LLMProviderInterface
@@ -22,11 +22,18 @@ class DependencyContainer:
     _slide_deck_service: Optional[Any] = None
 
     @classmethod
-    def reset_runtime_caches(cls) -> None:
+    def reset_runtime_caches(cls, *, preserve_repository: bool = False) -> None:
         """Drop cached services that depend on model settings."""
 
+        repository = cls._knowledge_repository
         cls._vector_store = None
         cls._slide_deck_service = None
+        if preserve_repository:
+            return
+        cls._knowledge_repository = None
+        close_repository = getattr(repository, "close_sync", None)
+        if callable(close_repository):
+            close_repository()
     
     @classmethod
     def get_vector_store(
@@ -86,9 +93,23 @@ class DependencyContainer:
         force_new: bool = False,
     ) -> KnowledgeRepositoryInterface:
         if cls._knowledge_repository is None or force_new:
+            if force_new and cls._knowledge_repository is not None:
+                cls._vector_store = None
+                cls._slide_deck_service = None
+                close_repository = getattr(cls._knowledge_repository, "close_sync", None)
+                if callable(close_repository):
+                    close_repository()
             settings = settings or get_settings()
             from .infrastructure.repositories.seekdb_repository import SeekDBRepository
-            cls._knowledge_repository = SeekDBRepository(settings.seekdb_path)
+            cls._knowledge_repository = SeekDBRepository(
+                settings.seekdb_path,
+                allow_sqlite_vector_fallback=settings.seekdb_allow_sqlite_fallback,
+                embedding_profile_id=model_profile_identity(settings.api.models.embedding_model),
+            )
+        elif settings is not None:
+            embedding_profile_id = model_profile_identity(settings.api.models.embedding_model)
+            if hasattr(cls._knowledge_repository, "embedding_profile_id"):
+                cls._knowledge_repository.embedding_profile_id = embedding_profile_id
         return cls._knowledge_repository
 
     @classmethod
