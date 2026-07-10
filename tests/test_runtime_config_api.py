@@ -31,6 +31,11 @@ class FakeVectorStore:
         }
 
 
+class FailingStatsVectorStore:
+    async def get_stats(self) -> dict:
+        raise RuntimeError("storage unavailable")
+
+
 def test_runtime_config_is_redacted_and_preserves_blank_keys(monkeypatch, sample_config_file):
     monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(sample_config_file))
     monkeypatch.setattr(
@@ -314,3 +319,29 @@ def test_health_exposes_actual_vector_backend(monkeypatch):
     storage = response.json()["storage"]
     assert storage["actual_vector_backend"] == "unavailable"
     assert storage["native_available"] is False
+
+
+def test_health_returns_structured_503_when_storage_stats_fail(monkeypatch):
+    from backend import main as backend_main
+
+    monkeypatch.setattr(
+        "backend.dependencies.get_vector_store",
+        lambda: FailingStatsVectorStore(),
+    )
+
+    response = TestClient(backend_main.app).get("/health")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "unhealthy",
+        "version": get_settings().app_version,
+        "storage": {
+            "actual_vector_backend": "unavailable",
+            "native_available": False,
+            "embedding_configured": bool(
+                get_settings().api.models.embedding_model.model
+                and get_settings().api.models.embedding_model.api_key
+            ),
+            "error": "storage unavailable",
+        },
+    }

@@ -82,12 +82,27 @@ async def health_check():
     from .dependencies import get_vector_store
 
     current_settings = get_settings()
-    vector_store = get_vector_store()
-    stats = await vector_store.get_stats()
-    storage = stats.get("storage", {})
-    native_available = storage.get("native_available", False)
     embedding_profile = current_settings.api.models.embedding_model
     embedding_configured = bool(embedding_profile.model and embedding_profile.api_key)
+    try:
+        vector_store = get_vector_store()
+        stats = await vector_store.get_stats()
+        storage = stats.get("storage", {})
+        native_available = storage.get("native_available", False)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "version": current_settings.app_version,
+                "storage": {
+                    "actual_vector_backend": "unavailable",
+                    "native_available": False,
+                    "embedding_configured": embedding_configured,
+                    "error": str(exc),
+                },
+            },
+        )
     strict_seekdb = (
         current_settings.vector_store_type == "seekdb"
         and not current_settings.seekdb_allow_sqlite_fallback

@@ -106,6 +106,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         )
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
         self._storage_initialized = False
         self._migration_has_unresolved_sources = False
@@ -466,7 +467,28 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             (SourceStatus.DELETED.value,),
         ).fetchall()
         sources = [KnowledgeSource.model_validate_json(row["payload"]) for row in source_rows]
+        reconciled_states = {"seekdb"}
+        if self.allow_sqlite_vector_fallback:
+            reconciled_states.add("sqlite_fallback_reconciled")
+        reconciled_placeholders = ",".join("?" for _ in reconciled_states)
         for source in sources:
+            state_row = self._conn.execute(
+                "SELECT source_id FROM chunk_index_state WHERE source_id = ?",
+                (source.id,),
+            ).fetchone()
+            if state_row:
+                unreconciled_row = self._conn.execute(
+                    f"""
+                    SELECT 1
+                    FROM chunks
+                    WHERE source_id = ?
+                      AND vector_state NOT IN ({reconciled_placeholders})
+                    LIMIT 1
+                    """,
+                    (source.id, *reconciled_states),
+                ).fetchone()
+                if unreconciled_row is None:
+                    continue
             sqlite_rows = self._conn.execute(
                 "SELECT payload, vector_state FROM chunks WHERE source_id = ? ORDER BY chunk_index ASC",
                 (source.id,),
@@ -481,13 +503,6 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                         storage_mode="seekdb",
                     )
                 continue
-            reconciled_states = {"seekdb"}
-            if self.allow_sqlite_vector_fallback:
-                reconciled_states.add("sqlite_fallback_reconciled")
-            state_row = self._conn.execute(
-                "SELECT source_id FROM chunk_index_state WHERE source_id = ?",
-                (source.id,),
-            ).fetchone()
             if state_row and all(row["vector_state"] in reconciled_states for row in sqlite_rows):
                 continue
             if state_row and all(row["vector_state"] == "legacy_needs_embedding" for row in sqlite_rows):

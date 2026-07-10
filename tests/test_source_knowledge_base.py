@@ -51,6 +51,18 @@ def test_repository_migrates_legacy_chunk_schema_with_vector_state(tmp_path: Pat
     assert "embedding_profile" in state_columns
 
 
+def test_repository_enables_sqlite_wal_mode(tmp_path: Path):
+    repo = SeekDBRepository(
+        tmp_path / "wal.db",
+        native_chunk_index=RecordingNativeIndex(),
+        allow_sqlite_vector_fallback=False,
+    )
+
+    journal_mode = repo._conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+    assert journal_mode.lower() == "wal"
+
+
 @pytest.mark.asyncio
 async def test_backfill_recognizes_pre_vector_state_strict_native_rows(tmp_path: Path):
     db_path = tmp_path / "legacy-strict.db"
@@ -1086,6 +1098,37 @@ async def test_repository_backfills_existing_sqlite_chunks_to_native_index(tmp_p
     ).fetchone()
     assert sqlite_row["embedding"] is None
     assert '"embedding":null' in sqlite_row["payload"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_payload_deserialization_for_reconciled_sources(tmp_path: Path):
+    db_path = tmp_path / "reconciled.db"
+    native_index = RecordingNativeIndex()
+    repo = SeekDBRepository(
+        db_path,
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+    source = KnowledgeSource(id="src-reconciled", kind=SourceKind.TEXT, title="Reconciled")
+    chunk = KnowledgeChunk(
+        id="chunk-reconciled",
+        source_id=source.id,
+        content="already reconciled",
+        chunk_index=0,
+        embedding=[0.1, 0.2, 0.3],
+        metadata={"source_id": source.id},
+    )
+    await repo.save_source(source)
+    await repo.save_chunks(source.id, [chunk])
+    repo._conn.execute(
+        "UPDATE chunks SET payload = 'not-json' WHERE source_id = ?",
+        (source.id,),
+    )
+    repo._conn.commit()
+
+    written = repo._backfill_native_chunks_sync()
+
+    assert written == 0
 
 
 @pytest.mark.asyncio
