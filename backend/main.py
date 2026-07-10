@@ -31,6 +31,14 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.upload_dir, exist_ok=True)
     os.makedirs(settings.output_dir, exist_ok=True)
     os.makedirs(settings.chroma_persist_dir, exist_ok=True)
+
+    if settings.vector_store_type == "seekdb":
+        from .dependencies import DependencyContainer
+
+        repository = DependencyContainer.get_knowledge_repository(settings=settings)
+        initialize_storage = getattr(repository, "initialize_storage", None)
+        if callable(initialize_storage):
+            await initialize_storage()
     
     yield
 
