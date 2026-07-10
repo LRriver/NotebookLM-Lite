@@ -7,6 +7,8 @@ contain secrets and must remain ignored.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -34,6 +36,18 @@ class ModelProfile(BaseModel):
     voice: Optional[str] = None
     response_format: str = "mp3"
     stream: bool = True
+
+
+def model_profile_identity(profile: ModelProfile) -> str:
+    """Return a stable, secret-free identity for embedding compatibility checks."""
+
+    payload = {
+        "adapter": profile.adapter.strip(),
+        "base_url": profile.base_url.strip().rstrip("/"),
+        "model": profile.model.strip(),
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 class ModelProfiles(BaseModel):

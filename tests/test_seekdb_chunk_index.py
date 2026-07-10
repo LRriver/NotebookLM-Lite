@@ -1,7 +1,4 @@
-import os
-import subprocess
 import sys
-import textwrap
 import types
 from pathlib import Path
 
@@ -125,6 +122,7 @@ class FakeClient:
         self.collections = {}
         self.created = []
         self.exit_calls = 0
+        self.list_calls = 0
         FakeClient.instances.append(self)
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -145,12 +143,13 @@ class FakeClient:
             raise KeyError(name)
         return self.collections[name]
 
+    def list_collections(self):
+        self.list_calls += 1
+        return list(self.collections.values())
+
 
 @pytest.fixture(autouse=True)
-def fake_pyseekdb(monkeypatch, request):
-    if request.node.name.startswith("test_real_pyseekdb"):
-        yield
-        return
+def fake_pyseekdb(monkeypatch):
     FakeClient.instances.clear()
     module = types.SimpleNamespace(Client=FakeClient, HNSWConfiguration=FakeHNSWConfiguration)
     monkeypatch.setitem(sys.modules, "pyseekdb", module)
@@ -196,6 +195,15 @@ def test_close_releases_native_client_once(tmp_path: Path):
     index.close()
 
     assert client.exit_calls == 1
+
+
+def test_probe_eagerly_opens_native_client(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    client = FakeClient.instances[0]
+
+    index.probe()
+
+    assert client.list_calls == 1
 
 
 def test_search_queries_seekdb_collections_and_reconstructs_chunks(tmp_path: Path):
@@ -567,217 +575,3 @@ def test_missing_pyseekdb_raises_without_silent_sqlite_vector_fallback(tmp_path:
 
     with pytest.raises(SeekDBUnavailableError):
         SeekDBChunkIndex(tmp_path / "native.seekdb")
-
-
-def run_real_pyseekdb_subprocess(script: str) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join(
-        value for value in [str(repo_root), env.get("PYTHONPATH", "")] if value
-    )
-    subprocess_prelude = textwrap.dedent(
-        """
-        try:
-            import pyseekdb  # noqa: F401
-        except Exception:
-            raise SystemExit(77)
-
-        from backend.domain.source import KnowledgeChunk
-        from backend.infrastructure.vector_stores.seekdb_chunk_index import SeekDBChunkIndex
-
-
-        def chunk(chunk_id: str, source_id: str, embedding: list[float], metadata: dict | None = None):
-            return KnowledgeChunk(
-                id=chunk_id,
-                source_id=source_id,
-                content=f"{chunk_id} content",
-                chunk_index=0,
-                embedding=embedding,
-                metadata=metadata if metadata is not None else {"source_id": source_id},
-            )
-        """
-    )
-    subprocess_script = (
-        subprocess_prelude
-        + "\nindex = None\ntry:\n"
-        + textwrap.indent(textwrap.dedent(script), "    ")
-        + "\nfinally:\n    if index is not None:\n        index.close()\n"
-    )
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-c", subprocess_script],
-            cwd=repo_root,
-            env=env,
-            timeout=60,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        pytest.skip("real pyseekdb subprocess timed out after 60 seconds")
-    if completed.returncode == 77:
-        pytest.skip("pyseekdb is unavailable in subprocess")
-    assert completed.returncode == 0
-
-
-def test_real_pyseekdb_upsert_refresh_and_query_round_trip(tmp_path: Path):
-    run_real_pyseekdb_subprocess(
-        f"""
-        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
-        index.upsert_source_chunks("real-source", [chunk("real-chunk", "real-source", [0.1, 0.2, 0.3])])
-        results = index.search(
-            query_embedding=[0.1, 0.2, 0.3],
-            source_ids=["real-source"],
-            top_k=1,
-        )
-        assert results[0]["chunk"].id == "real-chunk"
-        """
-    )
-
-
-def test_real_pyseekdb_hybrid_search_round_trip(tmp_path: Path):
-    run_real_pyseekdb_subprocess(
-        f"""
-        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
-        index.upsert_source_chunks(
-            "real-source",
-            [
-                chunk("real-lexical", "real-source", [0.9, 0.1, 0.1]),
-                chunk("real-vector", "real-source", [0.1, 0.2, 0.3]),
-                chunk("real-noise", "real-source", [0.8, 0.8, 0.8]),
-            ],
-        )
-        results = index.hybrid_search(
-            query_text="real-lexical",
-            query_embedding=[0.1, 0.2, 0.3],
-            source_ids=["real-source"],
-            top_k=3,
-        )
-        assert results
-        assert results[0]["chunk"].id == "real-lexical"
-        assert results[0]["score"] > 0
-        """
-    )
-
-
-def test_real_pyseekdb_reindex_replaces_stale_chunks(tmp_path: Path):
-    run_real_pyseekdb_subprocess(
-        f"""
-        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
-        index.upsert_source_chunks(
-            "real-source",
-            [
-                chunk("real-a", "real-source", [0.1, 0.2, 0.3]),
-                chunk("real-b", "real-source", [0.3, 0.2, 0.1]),
-            ],
-        )
-        index.upsert_source_chunks("real-source", [chunk("real-c", "real-source", [0.9, 0.1, 0.1])])
-        results = index.search(
-            query_embedding=[0.9, 0.1, 0.1],
-            source_ids=["real-source"],
-            top_k=10,
-        )
-        assert [item["chunk"].id for item in results] == ["real-c"]
-        """
-    )
-
-
-def test_real_pyseekdb_conflicting_metadata_source_id_does_not_leave_stale_chunks(
-    tmp_path: Path,
-):
-    run_real_pyseekdb_subprocess(
-        f"""
-        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
-        index.upsert_source_chunks(
-            "real-source",
-            [
-                chunk(
-                    "real-a",
-                    "real-source",
-                    [0.1, 0.2, 0.3],
-                    metadata={{"source_id": "wrong-source"}},
-                ),
-                chunk(
-                    "real-b",
-                    "real-source",
-                    [0.3, 0.2, 0.1],
-                    metadata={{"source_id": "wrong-source"}},
-                ),
-            ],
-        )
-        index.upsert_source_chunks("real-source", [chunk("real-c", "real-source", [0.9, 0.1, 0.1])])
-        results = index.search(
-            query_embedding=[0.9, 0.1, 0.1],
-            source_ids=["real-source"],
-            top_k=10,
-        )
-        assert [item["chunk"].id for item in results] == ["real-c"]
-        """
-    )
-
-
-def test_real_pyseekdb_empty_reindex_clears_existing_chunks(tmp_path: Path):
-    run_real_pyseekdb_subprocess(
-        f"""
-        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
-        index.upsert_source_chunks("real-source", [chunk("real-a", "real-source", [0.1, 0.2, 0.3])])
-        index.upsert_source_chunks("real-source", [])
-        results = index.search(
-            query_embedding=[0.1, 0.2, 0.3],
-            source_ids=["real-source"],
-            top_k=10,
-        )
-        assert results == []
-        """
-    )
-
-
-def test_real_pyseekdb_stale_bad_metadata_row_is_removed_by_collection_membership(tmp_path: Path):
-    run_real_pyseekdb_subprocess(
-        f"""
-        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
-        index.upsert_source_chunks("real-source", [chunk("real-a", "real-source", [0.1, 0.2, 0.3])])
-        stale = chunk(
-            "real-stale",
-            "real-source",
-            [0.2, 0.2, 0.2],
-            metadata={{"source_id": "wrong-source"}},
-        )
-        collection = index._collection("real-source", dimension=3)
-        collection.upsert(
-            ids=[stale.id],
-            documents=[stale.content],
-            metadatas=[{{"source_id": "wrong-source", "payload": stale.model_dump_json()}}],
-            embeddings=[stale.embedding],
-        )
-        collection.refresh_index()
-
-        index.upsert_source_chunks("real-source", [chunk("real-c", "real-source", [0.9, 0.1, 0.1])])
-        results = index.search(
-            query_embedding=[0.9, 0.1, 0.1],
-            source_ids=["real-source"],
-            top_k=10,
-        )
-        assert [item["chunk"].id for item in results] == ["real-c"]
-        """
-    )
-
-
-def test_real_pyseekdb_dimension_mismatch_preserves_existing_chunks(tmp_path: Path):
-    run_real_pyseekdb_subprocess(
-        f"""
-        index = SeekDBChunkIndex({str(tmp_path / "real.seekdb")!r})
-        index.upsert_source_chunks("real-source", [chunk("real-a", "real-source", [0.1, 0.2, 0.3])])
-        try:
-            index.upsert_source_chunks("real-source", [chunk("real-b", "real-source", [0.1, 0.2])])
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("dimension mismatch did not raise")
-
-        results = index.search(
-            query_embedding=[0.1, 0.2, 0.3],
-            source_ids=["real-source"],
-            top_k=10,
-        )
-        assert [item["chunk"].id for item in results] == ["real-a"]
-        """
-    )

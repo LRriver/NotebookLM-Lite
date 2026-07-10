@@ -61,6 +61,9 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest -q
 
+      - name: Verify native SeekDB retrieval
+        run: timeout 120s python scripts/verify_seekdb_native.py
+
       - name: Compile backend modules
         run: python -m compileall -q backend
 

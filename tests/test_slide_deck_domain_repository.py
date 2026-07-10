@@ -252,6 +252,9 @@ def test_seekdb_repository_uses_separate_embedded_path_for_native_seekdb(tmp_pat
             calls.append(path)
             Path(path).mkdir(parents=True, exist_ok=True)
 
+        def list_collections(self):
+            return []
+
     monkeypatch.setitem(sys.modules, "pyseekdb", types.SimpleNamespace(Client=FakeClient))
 
     db_path = tmp_path / "knowledge.db"

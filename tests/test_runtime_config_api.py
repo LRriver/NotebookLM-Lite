@@ -9,13 +9,23 @@ from backend.dependencies import DependencyContainer
 
 
 class FakeVectorStore:
-    def __init__(self, status: dict) -> None:
+    def __init__(
+        self,
+        status: dict,
+        total_chunks: int = 0,
+        indexed_vector_chunks: int | None = None,
+    ) -> None:
         self.status = status
+        self.total_chunks = total_chunks
+        self.indexed_vector_chunks = (
+            total_chunks if indexed_vector_chunks is None else indexed_vector_chunks
+        )
 
     async def get_stats(self) -> dict:
         return {
             "total_documents": 0,
-            "total_chunks": 0,
+            "total_chunks": self.total_chunks,
+            "indexed_vector_chunks": self.indexed_vector_chunks,
             "backend": self.status["vector_backend"],
             "storage": self.status,
         }
@@ -23,6 +33,15 @@ class FakeVectorStore:
 
 def test_runtime_config_is_redacted_and_preserves_blank_keys(monkeypatch, sample_config_file):
     monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(sample_config_file))
+    monkeypatch.setattr(
+        DependencyContainer,
+        "get_vector_store",
+        staticmethod(
+            lambda settings=None: FakeVectorStore(
+                {"vector_backend": "seekdb", "native_available": True}
+            )
+        ),
+    )
     _RUNTIME_MODEL_OVERRIDES.clear()
     get_settings.cache_clear()
     DependencyContainer.reset_runtime_caches()
@@ -102,6 +121,28 @@ def test_runtime_cache_reset_closes_cached_repository():
 
     assert repository.close_calls == 1
     assert DependencyContainer._knowledge_repository is None
+
+
+def test_runtime_cache_reset_can_preserve_open_repository():
+    class ClosableRepository:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close_sync(self) -> None:
+            self.close_calls += 1
+
+    repository = ClosableRepository()
+    DependencyContainer._knowledge_repository = repository
+    DependencyContainer._vector_store = object()
+    DependencyContainer._slide_deck_service = object()
+
+    DependencyContainer.reset_runtime_caches(preserve_repository=True)
+
+    assert repository.close_calls == 0
+    assert DependencyContainer._knowledge_repository is repository
+    assert DependencyContainer._vector_store is None
+    assert DependencyContainer._slide_deck_service is None
+    DependencyContainer.reset_runtime_caches()
 
 
 def test_force_new_repository_closes_old_repository_and_invalidates_dependents(monkeypatch):
@@ -189,6 +230,74 @@ def test_runtime_config_exposes_sqlite_fallback_status(monkeypatch, sample_confi
     assert storage["native_available"] is False
 
 
+def test_runtime_config_rejects_embedding_identity_change_with_indexed_chunks(
+    monkeypatch,
+    sample_config_file,
+):
+    monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(sample_config_file))
+    monkeypatch.setattr(
+        DependencyContainer,
+        "get_vector_store",
+        staticmethod(
+            lambda settings=None: FakeVectorStore(
+                {"vector_backend": "seekdb", "native_available": True},
+                total_chunks=3,
+            )
+        ),
+    )
+    _RUNTIME_MODEL_OVERRIDES.clear()
+    get_settings.cache_clear()
+
+    app = FastAPI()
+    app.include_router(config_router, prefix="/api")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/config",
+        json={"models": {"embedding_model": {"model": "different-embedding-model"}}},
+    )
+
+    assert response.status_code == 409
+    assert "re-index" in response.json()["detail"]
+    assert get_settings().api.models.embedding_model.model == "test-embedding-model"
+
+    _RUNTIME_MODEL_OVERRIDES.clear()
+    get_settings.cache_clear()
+
+
+def test_runtime_config_allows_embedding_identity_change_without_indexed_vectors(
+    monkeypatch,
+    sample_config_file,
+):
+    monkeypatch.setenv("NOTEBOOKLM_CONFIG_FILE", str(sample_config_file))
+    monkeypatch.setattr(
+        DependencyContainer,
+        "get_vector_store",
+        staticmethod(
+            lambda settings=None: FakeVectorStore(
+                {"vector_backend": "seekdb", "native_available": True},
+                total_chunks=3,
+                indexed_vector_chunks=0,
+            )
+        ),
+    )
+    _RUNTIME_MODEL_OVERRIDES.clear()
+    get_settings.cache_clear()
+
+    app = FastAPI()
+    app.include_router(config_router, prefix="/api")
+    response = TestClient(app).post(
+        "/api/config",
+        json={"models": {"embedding_model": {"model": "different-embedding-model"}}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["models"]["embedding_model"]["model"] == "different-embedding-model"
+
+    _RUNTIME_MODEL_OVERRIDES.clear()
+    get_settings.cache_clear()
+
+
 def test_health_exposes_actual_vector_backend(monkeypatch):
     from backend import main as backend_main
 
@@ -200,7 +309,8 @@ def test_health_exposes_actual_vector_backend(monkeypatch):
 
     response = client.get("/health")
 
-    assert response.status_code == 200
+    assert response.status_code == 503
+    assert response.json()["status"] == "unhealthy"
     storage = response.json()["storage"]
     assert storage["actual_vector_backend"] == "unavailable"
     assert storage["native_available"] is False

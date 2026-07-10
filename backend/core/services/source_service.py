@@ -97,10 +97,12 @@ class SourceService:
             for chunk, embedding in zip(chunks, embeddings):
                 chunk.embedding = embedding
         source.chunk_count = len(chunks)
-        source.status = SourceStatus.READY
         source.updated_at = utc_now()
         await self.repository.save_source(source)
         await self.repository.save_chunks(source.id, chunks)
+        source.status = SourceStatus.READY
+        source.updated_at = utc_now()
+        await self.repository.save_source(source)
         return source
 
     async def _fail_source(self, source: KnowledgeSource, exc: Exception) -> KnowledgeSource:

@@ -61,6 +61,10 @@ async def upload_document(
             char_count=source.char_count
         )
         
+    except HTTPException:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise
     except Exception as e:
         # 清理文件
         if os.path.exists(file_path):

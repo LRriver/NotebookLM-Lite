@@ -10,6 +10,7 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .config import get_settings
 from .api.routes.chat import router as chat_router
@@ -80,17 +81,28 @@ app.include_router(slide_decks_router, prefix="/api")
 async def health_check():
     from .dependencies import get_vector_store
 
+    current_settings = get_settings()
     vector_store = get_vector_store()
     stats = await vector_store.get_stats()
     storage = stats.get("storage", {})
-    return {
-        "status": "healthy",
-        "version": settings.app_version,
+    native_available = storage.get("native_available", False)
+    embedding_profile = current_settings.api.models.embedding_model
+    embedding_configured = bool(embedding_profile.model and embedding_profile.api_key)
+    strict_seekdb = (
+        current_settings.vector_store_type == "seekdb"
+        and not current_settings.seekdb_allow_sqlite_fallback
+    )
+    healthy = not strict_seekdb or (native_available and embedding_configured)
+    payload = {
+        "status": "healthy" if healthy else "unhealthy",
+        "version": current_settings.app_version,
         "storage": {
             "actual_vector_backend": storage.get("vector_backend", stats.get("backend", "unknown")),
-            "native_available": storage.get("native_available", False),
+            "native_available": native_available,
+            "embedding_configured": embedding_configured,
         },
     }
+    return JSONResponse(status_code=200 if healthy else 503, content=payload)
 
 
 # 向量存储统计

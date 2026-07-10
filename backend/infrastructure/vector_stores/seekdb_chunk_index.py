@@ -38,6 +38,17 @@ class SeekDBChunkIndex:
             client_exit(None, None, None)
         self._closed = True
 
+    def probe(self) -> None:
+        """Force the lazy embedded client to connect before request-time work starts."""
+
+        list_collections = getattr(self.client, "list_collections", None)
+        if not callable(list_collections):
+            raise SeekDBUnavailableError("Native SeekDB client does not support a readiness probe")
+        try:
+            list_collections()
+        except Exception as exc:
+            raise SeekDBUnavailableError("Native SeekDB readiness probe failed") from exc
+
     def collection_name(self, source_id: str) -> str:
         digest = hashlib.sha1(source_id.encode("utf-8")).hexdigest()[:16]
         return f"chunks_{digest}"

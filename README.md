@@ -99,7 +99,8 @@ Key backend choices:
 - Python 3.10+
 - Node.js 18+
 - A text model endpoint configured in `config.yaml`
-- Optional: embedding, rerank, and speech model endpoints
+- An embedding endpoint when using the default strict SeekDB mode
+- Optional: rerank and speech model endpoints
 
 ### Backend
 
@@ -111,15 +112,18 @@ cp config_example.yaml config.yaml
 Edit `config.yaml` and fill in the profiles you want to use:
 
 - `api.models.text_model`: chat, RAG answers, Studio artifacts, podcast scripts
-- `api.models.embedding_model`: optional vector retrieval
+- `api.models.embedding_model`: required for ingestion and vector retrieval when `seekdb_allow_sqlite_fallback` is `false`
 - `api.models.rerank_model`: optional rerank
 - `api.models.audio_model`: optional speech/audio generation
 - `api.models.image_model`: slide image generation
 - `api.models.edit_model`: single-slide image editing
-- `storage.seekdb_path`: local knowledge database
+- `storage.seekdb_path`: local repository base path; SQLite keeps business metadata and native SeekDB keeps chunk vectors and retrieval indexes beside it
+- `storage.seekdb_allow_sqlite_fallback`: compatibility-only SQLite retrieval fallback; keep `false` to make SeekDB authoritative
 - `documents.chunking`: Chonkie/simple chunking settings
 
 Keep `config.yaml` local. It is ignored by git and should not contain committed keys.
+
+Once sources are indexed, the runtime settings API rejects changes to the embedding model, adapter, or base URL because existing vectors would no longer be compatible. Delete and re-import the sources before changing that embedding identity. API-key rotation does not require re-indexing.
 
 Start the backend:
 

@@ -92,11 +92,13 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         db_path: str | Path,
         native_chunk_index: object = _AUTO_NATIVE_INDEX,
         allow_sqlite_vector_fallback: bool = False,
+        embedding_profile_id: str | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.seekdb_path = self.db_path.parent / f"{self.db_path.stem}.seekdb"
         self.allow_sqlite_vector_fallback = allow_sqlite_vector_fallback
+        self.embedding_profile_id = embedding_profile_id
         self.native_chunk_index = (
             self._try_native_chunk_index(self.seekdb_path)
             if native_chunk_index is _AUTO_NATIVE_INDEX
@@ -143,6 +145,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 revision TEXT NOT NULL,
                 chunk_count INTEGER NOT NULL,
                 embedding_dimension INTEGER,
+                embedding_profile TEXT,
                 storage_mode TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -214,6 +217,20 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             self._conn.execute(
                 "ALTER TABLE chunks ADD COLUMN vector_state TEXT NOT NULL DEFAULT 'legacy'"
             )
+        state_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(chunk_index_state)").fetchall()
+        }
+        if "embedding_profile" not in state_columns:
+            self._conn.execute("ALTER TABLE chunk_index_state ADD COLUMN embedding_profile TEXT")
+            if self.embedding_profile_id:
+                self._conn.execute(
+                    """
+                    UPDATE chunk_index_state
+                    SET embedding_profile = ?
+                    WHERE embedding_profile IS NULL AND storage_mode = 'seekdb'
+                    """,
+                    (self.embedding_profile_id,),
+                )
         self._conn.commit()
 
     async def close(self) -> None:
@@ -232,10 +249,23 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
 
     def storage_status(self) -> dict[str, Any]:
         if self.native_chunk_index is not None:
-            status = dict(self.native_chunk_index.status())
-            status.setdefault("seekdb_path", str(self.seekdb_path))
-            status.setdefault("native_available", True)
-            return status
+            try:
+                probe_native = getattr(self.native_chunk_index, "probe", None)
+                if callable(probe_native):
+                    probe_native()
+                status = dict(self.native_chunk_index.status())
+                status.setdefault("seekdb_path", str(self.seekdb_path))
+                status.setdefault("native_available", True)
+                return status
+            except Exception as exc:
+                return {
+                    "vector_backend": (
+                        "sqlite_fallback" if self.allow_sqlite_vector_fallback else "unavailable"
+                    ),
+                    "seekdb_path": str(self.seekdb_path),
+                    "native_available": False,
+                    "error": str(exc),
+                }
         return {
             "vector_backend": "sqlite_fallback" if self.allow_sqlite_vector_fallback else "unavailable",
             "seekdb_path": str(self.seekdb_path),
@@ -365,6 +395,9 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
 
     async def get_chunks(self, source_id: str) -> list[KnowledgeChunk]:
         await self._ensure_storage_initialized()
+        state = self._chunk_index_states([source_id]).get(source_id)
+        if state is not None and state["storage_mode"] == "sqlite_legacy":
+            return self._get_sqlite_chunks_sync(source_id)
         if self.native_chunk_index is not None:
             get_native_chunks = getattr(self.native_chunk_index, "get_source_chunks", None)
             if callable(get_native_chunks):
@@ -385,17 +418,29 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 return 0
             raise RuntimeError("native SeekDB vector index is unavailable; cannot backfill chunks")
 
+        probe_native = getattr(self.native_chunk_index, "probe", None)
+        if callable(probe_native):
+            probe_native()
         self._recover_pending_sync_operations()
         written = self._backfill_native_chunks_sync()
         if not self.allow_sqlite_vector_fallback and not self._migration_has_unresolved_sources:
             self._set_repository_meta("native_chunk_migration_v2", "complete")
+        self._reconcile_processing_sources()
         self._storage_initialized = True
         return written
 
     async def initialize_storage(self) -> int:
         """Recover interrupted writes and migrate legacy SQLite vectors into SeekDB."""
-        if self._storage_initialized or self.native_chunk_index is None:
+        if self._storage_initialized:
             return 0
+        if self.native_chunk_index is None:
+            if self.allow_sqlite_vector_fallback:
+                self._reconcile_processing_sources()
+                self._storage_initialized = True
+            return 0
+        probe_native = getattr(self.native_chunk_index, "probe", None)
+        if callable(probe_native):
+            probe_native()
         self._recover_pending_sync_operations()
         written = 0
         if (
@@ -405,11 +450,12 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             written = self._backfill_native_chunks_sync()
             if not self._migration_has_unresolved_sources:
                 self._set_repository_meta("native_chunk_migration_v2", "complete")
+        self._reconcile_processing_sources()
         self._storage_initialized = True
         return written
 
     async def _ensure_storage_initialized(self) -> None:
-        if not self._storage_initialized and self.native_chunk_index is not None:
+        if not self._storage_initialized:
             await self.initialize_storage()
 
     def _backfill_native_chunks_sync(self) -> int:
@@ -625,11 +671,16 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                     source_id for source_id in requested_source_ids if source_id not in native_source_id_set
                 ]
                 if fallback_source_ids:
+                    fallback_query_embedding = (
+                        None
+                        if self._has_embedding_profile_mismatch(fallback_source_ids)
+                        else query_embedding
+                    )
                     fallback_results = await self._search_sqlite_chunk_rows(
                         query,
                         self._chunk_rows(fallback_source_ids),
                         top_k,
-                        query_embedding,
+                        fallback_query_embedding,
                         None,
                     )
                     results.extend(fallback_results)
@@ -681,13 +732,47 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             return []
         query_dimension = len(query_embedding)
         states = self._chunk_index_states(source_ids)
-        return [
-            source_id
+        seekdb_states = {
+            source_id: states[source_id]
             for source_id in source_ids
             if source_id in states
             and states[source_id]["storage_mode"] == "seekdb"
             and states[source_id]["chunk_count"] > 0
-            and states[source_id]["embedding_dimension"] == query_dimension
+        }
+        if not self.allow_sqlite_vector_fallback:
+            profile_mismatches = [
+                source_id
+                for source_id, state in seekdb_states.items()
+                if self.embedding_profile_id
+                and state["embedding_profile"]
+                and state["embedding_profile"] != self.embedding_profile_id
+            ]
+            if profile_mismatches:
+                raise RuntimeError(
+                    "Selected sources were indexed with a different embedding profile; "
+                    "re-index the sources before vector retrieval: "
+                    + ", ".join(profile_mismatches)
+                )
+            dimension_mismatches = [
+                source_id
+                for source_id, state in seekdb_states.items()
+                if state["embedding_dimension"] != query_dimension
+            ]
+            if dimension_mismatches:
+                raise RuntimeError(
+                    "Selected sources use an incompatible embedding dimension; "
+                    "re-index the sources before vector retrieval: "
+                    + ", ".join(dimension_mismatches)
+                )
+        return [
+            source_id
+            for source_id, state in seekdb_states.items()
+            if state["embedding_dimension"] == query_dimension
+            and (
+                not self.embedding_profile_id
+                or not state["embedding_profile"]
+                or state["embedding_profile"] == self.embedding_profile_id
+            )
         ]
 
     def _native_source_ids_with_chunks(self, source_ids: list[str]) -> list[str]:
@@ -709,6 +794,62 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             and states[source_id]["storage_mode"] == "sqlite_legacy"
             and states[source_id]["chunk_count"] > 0
         ]
+
+    def _has_embedding_profile_mismatch(self, source_ids: list[str]) -> bool:
+        if not self.embedding_profile_id:
+            return False
+        states = self._chunk_index_states(source_ids)
+        return any(
+            state["embedding_profile"]
+            and state["embedding_profile"] != self.embedding_profile_id
+            for state in states.values()
+        )
+
+    def indexed_vector_chunk_count(self) -> int:
+        row = self._conn.execute(
+            """
+            SELECT COALESCE(SUM(chunk_count), 0) AS total
+            FROM chunk_index_state
+            WHERE storage_mode = 'seekdb'
+            """
+        ).fetchone()
+        return int(row["total"])
+
+    def _reconcile_processing_sources(self) -> int:
+        rows = self._conn.execute(
+            """
+            SELECT sources.payload, chunk_index_state.chunk_count AS indexed_chunk_count
+            FROM sources
+            JOIN chunk_index_state ON chunk_index_state.source_id = sources.id
+            WHERE sources.status = ?
+            """,
+            (SourceStatus.PROCESSING.value,),
+        ).fetchall()
+        recovered = 0
+        with self._conn:
+            for row in rows:
+                source = KnowledgeSource.model_validate_json(row["payload"])
+                if not source.text or source.chunk_count != row["indexed_chunk_count"]:
+                    continue
+                source.status = SourceStatus.READY
+                source.error = None
+                source.updated_at = utc_now()
+                self._conn.execute(
+                    """
+                    UPDATE sources
+                    SET status = ?, payload = ?, updated_at = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (
+                        source.status.value,
+                        _dump_model(source),
+                        source.updated_at.isoformat(),
+                        source.id,
+                        SourceStatus.PROCESSING.value,
+                    ),
+                )
+                recovered += 1
+        return recovered
 
     def _record_sync_operation(
         self,
@@ -967,12 +1108,14 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         self._conn.execute(
             """
             INSERT INTO chunk_index_state(
-                source_id, revision, chunk_count, embedding_dimension, storage_mode, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                source_id, revision, chunk_count, embedding_dimension,
+                embedding_profile, storage_mode, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id) DO UPDATE SET
                 revision=excluded.revision,
                 chunk_count=excluded.chunk_count,
                 embedding_dimension=excluded.embedding_dimension,
+                embedding_profile=excluded.embedding_profile,
                 storage_mode=excluded.storage_mode,
                 updated_at=excluded.updated_at
             """,
@@ -981,6 +1124,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 revision,
                 len(chunks),
                 dimension,
+                self.embedding_profile_id,
                 storage_mode,
                 datetime.now(timezone.utc).isoformat(),
             ),
@@ -992,7 +1136,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         placeholders = ",".join("?" for _ in source_ids)
         rows = self._conn.execute(
             f"""
-            SELECT source_id, chunk_count, embedding_dimension, storage_mode
+            SELECT source_id, chunk_count, embedding_dimension, embedding_profile, storage_mode
             FROM chunk_index_state
             WHERE source_id IN ({placeholders})
             """,
