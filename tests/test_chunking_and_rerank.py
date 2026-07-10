@@ -37,6 +37,10 @@ class FailingNativeIndex(RecordingNativeIndex):
 class HybridRecordingIndex:
     def __init__(self) -> None:
         self.calls = []
+        self.upserts = []
+
+    def upsert_source_chunks(self, source_id, chunks):
+        self.upserts.append((source_id, chunks))
 
     def hybrid_search(self, query_text, query_embedding, source_ids, top_k):
         self.calls.append((query_text, query_embedding, source_ids, top_k))
@@ -174,6 +178,19 @@ async def test_seekdb_repository_prefers_native_hybrid_search(tmp_path: Path):
     )
     source = KnowledgeSource(id="src-hybrid", kind=SourceKind.TEXT, title="Hybrid")
     await repo.save_source(source)
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="seed-hybrid",
+                source_id=source.id,
+                content="seed hybrid content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
 
     results = await repo.search_chunks(
         "TLS handshake",
@@ -230,6 +247,19 @@ async def test_seekdb_repository_reranks_native_hybrid_results(tmp_path: Path):
     )
     source = KnowledgeSource(id="src-hybrid-rerank", kind=SourceKind.TEXT, title="Hybrid rerank")
     await repo.save_source(source)
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="seed-hybrid-rerank",
+                source_id=source.id,
+                content="seed hybrid rerank content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
 
     results = await repo.search_chunks(
         "TLS handshake",

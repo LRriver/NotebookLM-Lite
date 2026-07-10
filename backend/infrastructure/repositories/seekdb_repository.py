@@ -259,11 +259,13 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                     "native SeekDB chunk writes require embeddings for all chunks; "
                     f"missing embeddings for: {', '.join(missing_embeddings)}"
                 )
+            native_eligible_chunks = self._native_eligible_chunks(chunks)
+            if len(native_eligible_chunks) != len(chunks):
+                raise RuntimeError("native SeekDB chunk writes require same-dimension embeddings for all chunks")
 
         native_chunks: list[KnowledgeChunk] | None = None
         if self.native_chunk_index is not None:
-            has_all_embeddings = bool(chunks) and all(chunk.embedding is not None for chunk in chunks)
-            native_chunks = chunks if has_all_embeddings else []
+            native_chunks = self._native_eligible_chunks(chunks)
 
         with self._conn:
             self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
@@ -294,6 +296,20 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         ).fetchall()
         return [KnowledgeChunk.model_validate_json(row["payload"]) for row in rows]
 
+    async def backfill_native_chunks(self) -> int:
+        if self.native_chunk_index is None:
+            if self.allow_sqlite_vector_fallback:
+                return 0
+            raise RuntimeError("native SeekDB vector index is unavailable; cannot backfill chunks")
+
+        written = 0
+        for source in await self.list_sources():
+            chunks = await self.get_chunks(source.id)
+            chunks_with_embeddings = self._native_eligible_chunks(chunks)
+            self.native_chunk_index.upsert_source_chunks(source.id, chunks_with_embeddings)
+            written += len(chunks_with_embeddings)
+        return written
+
     async def search_chunks(
         self,
         query: str,
@@ -302,18 +318,50 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         query_embedding: list[float] | None = None,
         rerank_provider: object | None = None,
     ) -> list[dict]:
+        if source_ids == []:
+            return []
         if self.native_chunk_index is not None and query_embedding is not None:
-            selected_source_ids = source_ids or self._current_source_ids()
+            if not query_embedding:
+                if self.allow_sqlite_vector_fallback:
+                    rows = self._chunk_rows(source_ids)
+                    return await self._search_sqlite_chunk_rows(query, rows, top_k, None, rerank_provider)
+                raise RuntimeError("native SeekDB vector search requires a non-empty query embedding")
+            requested_source_ids = source_ids if source_ids is not None else self._current_source_ids()
+            selected_source_ids = self._native_search_source_ids(requested_source_ids, query_embedding)
+            results: list[dict] = []
             hybrid_search = getattr(self.native_chunk_index, "hybrid_search", None)
-            if callable(hybrid_search):
-                results = hybrid_search(
-                    query_text=query,
-                    query_embedding=query_embedding,
-                    source_ids=selected_source_ids,
-                    top_k=top_k,
-                )
-            else:
-                results = self.native_chunk_index.search(query_embedding, selected_source_ids, top_k)
+            if selected_source_ids:
+                try:
+                    if callable(hybrid_search):
+                        results.extend(
+                            hybrid_search(
+                                query_text=query,
+                                query_embedding=query_embedding,
+                                source_ids=selected_source_ids,
+                                top_k=top_k,
+                            )
+                        )
+                    else:
+                        results.extend(self.native_chunk_index.search(query_embedding, selected_source_ids, top_k))
+                except Exception:
+                    if not self.allow_sqlite_vector_fallback:
+                        raise
+                    selected_source_ids = []
+            if self.allow_sqlite_vector_fallback:
+                native_source_id_set = set(selected_source_ids)
+                fallback_source_ids = [
+                    source_id for source_id in requested_source_ids if source_id not in native_source_id_set
+                ]
+                if fallback_source_ids:
+                    fallback_results = await self._search_sqlite_chunk_rows(
+                        query,
+                        self._chunk_rows(fallback_source_ids),
+                        top_k,
+                        query_embedding,
+                        None,
+                    )
+                    results.extend(fallback_results)
+            results = sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
             return await self._maybe_rerank(query, results, top_k, rerank_provider)
 
         if self.native_chunk_index is not None and not self.allow_sqlite_vector_fallback:
@@ -331,10 +379,47 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         ).fetchall()
         return [row["id"] for row in rows]
 
+    @staticmethod
+    def _native_eligible_chunks(chunks: list[KnowledgeChunk]) -> list[KnowledgeChunk]:
+        if not chunks:
+            return []
+        dimension: int | None = None
+        for chunk in chunks:
+            if not chunk.embedding:
+                return []
+            if dimension is None:
+                dimension = len(chunk.embedding)
+            elif len(chunk.embedding) != dimension:
+                return []
+        return chunks
+
+    def _native_search_source_ids(self, source_ids: list[str], query_embedding: list[float]) -> list[str]:
+        if not source_ids:
+            return []
+        query_dimension = len(query_embedding)
+        selected: list[str] = []
+        for source_id in source_ids:
+            chunks = self._native_eligible_chunks(self._get_chunks_sync(source_id))
+            if not chunks:
+                continue
+            if len(chunks[0].embedding or []) != query_dimension:
+                continue
+            selected.append(source_id)
+        return selected
+
+    def _get_chunks_sync(self, source_id: str) -> list[KnowledgeChunk]:
+        rows = self._conn.execute(
+            "SELECT payload FROM chunks WHERE source_id = ? ORDER BY chunk_index ASC",
+            (source_id,),
+        ).fetchall()
+        return [KnowledgeChunk.model_validate_json(row["payload"]) for row in rows]
+
     def _chunk_rows(self, source_ids: list[str] | None = None) -> list[sqlite3.Row]:
+        if source_ids == []:
+            return []
         params: list[Any] = []
         sql = "SELECT payload, content, embedding FROM chunks"
-        if source_ids:
+        if source_ids is not None:
             placeholders = ",".join("?" for _ in source_ids)
             sql += f" WHERE source_id IN ({placeholders})"
             params.extend(source_ids)
@@ -353,10 +438,14 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         for row, bm25_score in zip(rows, bm25_scores):
             chunk = KnowledgeChunk.model_validate_json(row["payload"])
             vector_score = 0.0
+            has_comparable_embedding = False
             if query_embedding and row["embedding"]:
-                vector_score = _cosine(query_embedding, json.loads(row["embedding"]))
+                row_embedding = json.loads(row["embedding"])
+                has_comparable_embedding = len(row_embedding) == len(query_embedding)
+                if has_comparable_embedding:
+                    vector_score = _cosine(query_embedding, row_embedding)
             score = bm25_score + max(vector_score, 0.0)
-            if bm25_score > 0 or query_embedding:
+            if bm25_score > 0 or has_comparable_embedding:
                 results.append({"chunk": chunk, "score": score})
 
         results = sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]

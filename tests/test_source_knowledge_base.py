@@ -92,6 +92,26 @@ class FailingNativeIndex(RecordingNativeIndex):
         raise RuntimeError(self.message)
 
 
+class DimensionCheckingNativeIndex(RecordingNativeIndex):
+    def search(self, query_embedding, source_ids, top_k):
+        bad_source_ids = [
+            source_id
+            for source_id, chunks in self.upserts
+            if source_id in source_ids
+            and chunks
+            and len(chunks[0].embedding or []) != len(query_embedding)
+        ]
+        if bad_source_ids:
+            raise ValueError(f"dimension mismatch for {bad_source_ids}")
+        return super().search(query_embedding, source_ids, top_k)
+
+
+class QueryFailingNativeIndex(RecordingNativeIndex):
+    def search(self, query_embedding, source_ids, top_k):
+        self.searches.append((query_embedding, source_ids, top_k))
+        raise KeyError("collection not found")
+
+
 class DeterministicEmbeddingProvider:
     def __init__(self) -> None:
         self.calls = []
@@ -434,6 +454,58 @@ async def test_native_upsert_failure_rolls_back_sqlite_chunk_replacement(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_strict_native_rejects_mixed_dimension_embeddings_before_sqlite_mutation(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-mixed-dim", kind=SourceKind.TEXT, title="Mixed Dimension")
+    old_chunk = KnowledgeChunk(
+        id="chunk-old",
+        source_id=source.id,
+        content="old sqlite content",
+        chunk_index=0,
+        embedding=[0.4, 0.5, 0.6],
+        metadata={"source_id": source.id},
+    )
+    seed_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await seed_repo.save_source(source)
+    await seed_repo.save_chunks(source.id, [old_chunk])
+    await seed_repo.close()
+    native_index = StaleAwareNativeIndex()
+    repo = SeekDBRepository(
+        db_path,
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+
+    with pytest.raises(RuntimeError, match="same-dimension embeddings"):
+        await repo.save_chunks(
+            source.id,
+            [
+                KnowledgeChunk(
+                    id="chunk-new-a",
+                    source_id=source.id,
+                    content="new sqlite content a",
+                    chunk_index=0,
+                    embedding=[0.1, 0.2, 0.3],
+                    metadata={"source_id": source.id},
+                ),
+                KnowledgeChunk(
+                    id="chunk-new-b",
+                    source_id=source.id,
+                    content="new sqlite content b",
+                    chunk_index=1,
+                    embedding=[0.1, 0.2],
+                    metadata={"source_id": source.id},
+                ),
+            ],
+        )
+
+    assert native_index.upserts == []
+    assert [chunk.id for chunk in await repo.get_chunks(source.id)] == ["chunk-old"]
+
+
+@pytest.mark.asyncio
 async def test_native_clear_failure_rolls_back_fallback_sqlite_chunk_replacement(tmp_path: Path):
     db_path = tmp_path / "knowledge.db"
     source = KnowledgeSource(id="src-clear-rollback", kind=SourceKind.TEXT, title="Clear Rollback")
@@ -469,6 +541,577 @@ async def test_native_clear_failure_rolls_back_fallback_sqlite_chunk_replacement
         )
 
     assert [chunk.id for chunk in await repo.get_chunks(source.id)] == ["chunk-old"]
+
+
+@pytest.mark.asyncio
+async def test_repository_backfills_existing_sqlite_chunks_to_native_index(tmp_path: Path):
+    db_path = tmp_path / "knowledge.db"
+    fallback_repo = SeekDBRepository(
+        db_path,
+        native_chunk_index=None,
+        allow_sqlite_vector_fallback=True,
+    )
+    source = KnowledgeSource(id="src-backfill", kind=SourceKind.TEXT, title="Backfill")
+    await fallback_repo.save_source(source)
+    await fallback_repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-backfill",
+                source_id=source.id,
+                content="backfill content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+    await fallback_repo.close()
+
+    native_index = RecordingNativeIndex()
+    repo = SeekDBRepository(
+        db_path,
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+
+    written = await repo.backfill_native_chunks()
+
+    assert written == 1
+    assert native_index.upserts[0][0] == source.id
+    assert native_index.upserts[0][1][0].id == "chunk-backfill"
+
+
+@pytest.mark.asyncio
+async def test_repository_backfill_requires_native_index_without_fallback(tmp_path: Path):
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=None,
+        allow_sqlite_vector_fallback=False,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot backfill chunks"):
+        await repo.backfill_native_chunks()
+
+
+@pytest.mark.asyncio
+async def test_repository_backfill_clears_native_chunks_for_sources_without_embeddings(tmp_path: Path):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-backfill-clear", kind=SourceKind.TEXT, title="Backfill Clear")
+    fallback_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await fallback_repo.save_source(source)
+    await fallback_repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-plain",
+                source_id=source.id,
+                content="plain backfill content",
+                chunk_index=0,
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+    await fallback_repo.close()
+
+    native_index = StaleAwareNativeIndex()
+    repo = SeekDBRepository(db_path, native_chunk_index=native_index, allow_sqlite_vector_fallback=False)
+
+    written = await repo.backfill_native_chunks()
+    results = await repo.search_chunks(
+        "plain backfill",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[0.1, 0.2, 0.3],
+    )
+
+    assert written == 0
+    assert native_index.upserts == [(source.id, [])]
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_repository_native_search_skips_legacy_sources_without_embeddings_after_backfill(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "knowledge.db"
+    embedded_source = KnowledgeSource(id="src-embedded", kind=SourceKind.TEXT, title="Embedded")
+    plain_source = KnowledgeSource(id="src-plain", kind=SourceKind.TEXT, title="Plain")
+    fallback_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await fallback_repo.save_source(embedded_source)
+    await fallback_repo.save_chunks(
+        embedded_source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-embedded",
+                source_id=embedded_source.id,
+                content="embedded legacy content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": embedded_source.id},
+            )
+        ],
+    )
+    await fallback_repo.save_source(plain_source)
+    await fallback_repo.save_chunks(
+        plain_source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-plain",
+                source_id=plain_source.id,
+                content="plain legacy content",
+                chunk_index=0,
+                metadata={"source_id": plain_source.id},
+            )
+        ],
+    )
+    await fallback_repo.close()
+
+    native_index = RecordingNativeIndex()
+    repo = SeekDBRepository(db_path, native_chunk_index=native_index, allow_sqlite_vector_fallback=False)
+
+    await repo.backfill_native_chunks()
+    await repo.search_chunks("legacy", source_ids=None, top_k=1, query_embedding=[0.1, 0.2, 0.3])
+
+    assert {source_id for source_id, _chunks in native_index.upserts} == {
+        embedded_source.id,
+        plain_source.id,
+    }
+    assert native_index.searches == [([0.1, 0.2, 0.3], [embedded_source.id], 1)]
+
+
+@pytest.mark.asyncio
+async def test_repository_backfill_clears_partially_embedded_sources_and_skips_native_search(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-partial", kind=SourceKind.TEXT, title="Partial")
+    fallback_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await fallback_repo.save_source(source)
+    await fallback_repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-embedded",
+                source_id=source.id,
+                content="embedded partial content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source.id},
+            ),
+            KnowledgeChunk(
+                id="chunk-plain",
+                source_id=source.id,
+                content="plain partial content",
+                chunk_index=1,
+                metadata={"source_id": source.id},
+            ),
+        ],
+    )
+    await fallback_repo.close()
+
+    native_index = StaleAwareNativeIndex()
+    repo = SeekDBRepository(db_path, native_chunk_index=native_index, allow_sqlite_vector_fallback=False)
+
+    written = await repo.backfill_native_chunks()
+    results = await repo.search_chunks(
+        "partial",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[0.1, 0.2, 0.3],
+    )
+
+    assert written == 0
+    assert native_index.upserts == [(source.id, [])]
+    assert native_index.searches == []
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_repository_native_search_uses_sqlite_fallback_for_partial_writes(tmp_path: Path):
+    native_index = RecordingNativeIndex()
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=True,
+    )
+    source = KnowledgeSource(id="src-partial-fallback", kind=SourceKind.TEXT, title="Partial Fallback")
+    await repo.save_source(source)
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-embedded",
+                source_id=source.id,
+                content="embedded fallback content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source.id},
+            ),
+            KnowledgeChunk(
+                id="chunk-plain",
+                source_id=source.id,
+                content="plain fallback content",
+                chunk_index=1,
+                metadata={"source_id": source.id},
+            ),
+        ],
+    )
+
+    results = await repo.search_chunks(
+        "fallback",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[0.1, 0.2, 0.3],
+    )
+
+    assert native_index.upserts == [(source.id, [])]
+    assert native_index.searches == []
+    assert results
+    assert results[0]["chunk"].source_id == source.id
+
+
+@pytest.mark.asyncio
+async def test_repository_backfill_treats_empty_embedding_as_native_ineligible(tmp_path: Path):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-empty-embedding", kind=SourceKind.TEXT, title="Empty Embedding")
+    fallback_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await fallback_repo.save_source(source)
+    await fallback_repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-empty-embedding",
+                source_id=source.id,
+                content="empty embedding content",
+                chunk_index=0,
+                embedding=[],
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+    await fallback_repo.close()
+
+    native_index = StaleAwareNativeIndex()
+    repo = SeekDBRepository(db_path, native_chunk_index=native_index, allow_sqlite_vector_fallback=False)
+
+    written = await repo.backfill_native_chunks()
+    results = await repo.search_chunks(
+        "empty embedding",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[0.1, 0.2, 0.3],
+    )
+
+    assert written == 0
+    assert native_index.upserts == [(source.id, [])]
+    assert native_index.searches == []
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_repository_native_search_filters_sources_by_query_embedding_dimension(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "knowledge.db"
+    source_3d = KnowledgeSource(id="src-3d", kind=SourceKind.TEXT, title="3D")
+    source_2d = KnowledgeSource(id="src-2d", kind=SourceKind.TEXT, title="2D")
+    fallback_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await fallback_repo.save_source(source_3d)
+    await fallback_repo.save_chunks(
+        source_3d.id,
+        [
+            KnowledgeChunk(
+                id="chunk-3d",
+                source_id=source_3d.id,
+                content="three dimension content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source_3d.id},
+            )
+        ],
+    )
+    await fallback_repo.save_source(source_2d)
+    await fallback_repo.save_chunks(
+        source_2d.id,
+        [
+            KnowledgeChunk(
+                id="chunk-2d",
+                source_id=source_2d.id,
+                content="two dimension content",
+                chunk_index=0,
+                embedding=[0.1, 0.2],
+                metadata={"source_id": source_2d.id},
+            )
+        ],
+    )
+    await fallback_repo.close()
+
+    native_index = DimensionCheckingNativeIndex()
+    repo = SeekDBRepository(db_path, native_chunk_index=native_index, allow_sqlite_vector_fallback=False)
+    await repo.backfill_native_chunks()
+
+    await repo.search_chunks("dimension", source_ids=None, top_k=1, query_embedding=[0.1, 0.2, 0.3])
+
+    assert native_index.searches == [([0.1, 0.2, 0.3], [source_3d.id], 1)]
+
+
+@pytest.mark.asyncio
+async def test_repository_sqlite_fallback_handles_dimension_mismatched_sources(
+    tmp_path: Path,
+):
+    native_index = DimensionCheckingNativeIndex()
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=True,
+    )
+    source_3d = KnowledgeSource(id="src-3d-fallback", kind=SourceKind.TEXT, title="3D Fallback")
+    source_2d = KnowledgeSource(id="src-2d-fallback", kind=SourceKind.TEXT, title="2D Fallback")
+    await repo.save_source(source_3d)
+    await repo.save_chunks(
+        source_3d.id,
+        [
+            KnowledgeChunk(
+                id="chunk-3d-fallback",
+                source_id=source_3d.id,
+                content="three dimension fallback",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source_3d.id},
+            )
+        ],
+    )
+    await repo.save_source(source_2d)
+    await repo.save_chunks(
+        source_2d.id,
+        [
+            KnowledgeChunk(
+                id="chunk-2d-fallback",
+                source_id=source_2d.id,
+                content="two dimension fallback",
+                chunk_index=0,
+                embedding=[0.1, 0.2],
+                metadata={"source_id": source_2d.id},
+            )
+        ],
+    )
+
+    results = await repo.search_chunks(
+        "two dimension",
+        source_ids=[source_2d.id],
+        top_k=1,
+        query_embedding=[0.1, 0.2, 0.3],
+    )
+
+    assert native_index.searches == []
+    assert results
+    assert results[0]["chunk"].id == "chunk-2d-fallback"
+
+
+@pytest.mark.asyncio
+async def test_repository_sqlite_fallback_handles_missing_native_collection_for_eligible_chunks(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "knowledge.db"
+    source = KnowledgeSource(id="src-legacy-eligible", kind=SourceKind.TEXT, title="Legacy Eligible")
+    seed_repo = SeekDBRepository(db_path, native_chunk_index=None, allow_sqlite_vector_fallback=True)
+    await seed_repo.save_source(source)
+    await seed_repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-legacy-eligible",
+                source_id=source.id,
+                content="legacy eligible fallback content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+    await seed_repo.close()
+
+    native_index = QueryFailingNativeIndex()
+    repo = SeekDBRepository(db_path, native_chunk_index=native_index, allow_sqlite_vector_fallback=True)
+
+    results = await repo.search_chunks(
+        "legacy eligible",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[0.1, 0.2, 0.3],
+    )
+
+    assert native_index.searches == [([0.1, 0.2, 0.3], [source.id], 1)]
+    assert results
+    assert results[0]["chunk"].id == "chunk-legacy-eligible"
+
+
+@pytest.mark.asyncio
+async def test_repository_sqlite_fallback_keeps_vector_only_zero_cosine_results(
+    tmp_path: Path,
+):
+    source = KnowledgeSource(id="src-zero-cosine", kind=SourceKind.TEXT, title="Zero Cosine")
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=QueryFailingNativeIndex(),
+        allow_sqlite_vector_fallback=True,
+    )
+    await repo.save_source(source)
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-zero-cosine",
+                source_id=source.id,
+                content="orthogonal vector content without lexical query overlap",
+                chunk_index=0,
+                embedding=[0.0, 1.0],
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+
+    results = await repo.search_chunks(
+        "unrelated",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[1.0, 0.0],
+    )
+
+    assert results
+    assert results[0]["chunk"].id == "chunk-zero-cosine"
+    assert results[0]["score"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_strict_native_search_rejects_empty_query_embedding(tmp_path: Path):
+    native_index = RecordingNativeIndex()
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+    source = KnowledgeSource(id="src-empty-query", kind=SourceKind.TEXT, title="Empty Query")
+    await repo.save_source(source)
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-empty-query",
+                source_id=source.id,
+                content="empty query content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="non-empty query embedding"):
+        await repo.search_chunks(
+            "empty query",
+            source_ids=[source.id],
+            top_k=1,
+            query_embedding=[],
+        )
+
+    assert native_index.searches == []
+
+
+@pytest.mark.asyncio
+async def test_sqlite_fallback_handles_empty_query_embedding(tmp_path: Path):
+    native_index = RecordingNativeIndex()
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=True,
+    )
+    source = KnowledgeSource(id="src-empty-query-fallback", kind=SourceKind.TEXT, title="Empty Query Fallback")
+    await repo.save_source(source)
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-empty-query-fallback",
+                source_id=source.id,
+                content="empty query fallback content",
+                chunk_index=0,
+                embedding=[0.1, 0.2, 0.3],
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+
+    results = await repo.search_chunks(
+        "empty query fallback",
+        source_ids=[source.id],
+        top_k=1,
+        query_embedding=[],
+    )
+
+    assert native_index.searches == []
+    assert results
+    assert results[0]["chunk"].id == "chunk-empty-query-fallback"
+
+
+@pytest.mark.asyncio
+async def test_sqlite_fallback_respects_empty_source_selection(tmp_path: Path):
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=RecordingNativeIndex(),
+        allow_sqlite_vector_fallback=True,
+    )
+    source = KnowledgeSource(id="src-empty-selection", kind=SourceKind.TEXT, title="Empty Selection")
+    await repo.save_source(source)
+    await repo.save_chunks(
+        source.id,
+        [
+            KnowledgeChunk(
+                id="chunk-empty-selection",
+                source_id=source.id,
+                content="empty selection fallback content",
+                chunk_index=0,
+                metadata={"source_id": source.id},
+            )
+        ],
+    )
+
+    no_embedding_results = await repo.search_chunks(
+        "empty selection",
+        source_ids=[],
+        top_k=1,
+        query_embedding=None,
+    )
+    empty_embedding_results = await repo.search_chunks(
+        "empty selection",
+        source_ids=[],
+        top_k=1,
+        query_embedding=[],
+    )
+
+    assert no_embedding_results == []
+    assert empty_embedding_results == []
+
+
+@pytest.mark.asyncio
+async def test_strict_native_search_respects_empty_source_selection_without_embedding(tmp_path: Path):
+    native_index = RecordingNativeIndex()
+    repo = SeekDBRepository(
+        tmp_path / "knowledge.db",
+        native_chunk_index=native_index,
+        allow_sqlite_vector_fallback=False,
+    )
+
+    results = await repo.search_chunks(
+        "empty selection",
+        source_ids=[],
+        top_k=1,
+        query_embedding=None,
+    )
+
+    assert results == []
+    assert native_index.searches == []
 
 
 @pytest.mark.asyncio
