@@ -146,6 +146,20 @@ class SeekDBChunkIndex:
         except Exception as exc:
             logger.warning("Failed to delete SeekDB chunks for source %s: %s", source_id, exc)
 
+    def get_source_chunks(self, source_id: str) -> list[KnowledgeChunk]:
+        collection = self._existing_collection(source_id)
+        if collection is None:
+            return []
+        result = collection.get(include=["metadatas"])
+        metadatas = result.get("metadatas", []) or []
+        chunks: list[KnowledgeChunk] = []
+        for metadata in metadatas:
+            try:
+                chunks.append(KnowledgeChunk.model_validate_json(metadata["payload"]))
+            except Exception as exc:
+                raise ValueError("Malformed SeekDB chunk payload") from exc
+        return sorted(chunks, key=lambda chunk: chunk.chunk_index)
+
     def search(
         self,
         query_embedding: list[float],
@@ -167,6 +181,37 @@ class SeekDBChunkIndex:
                 include=include,
             )
             results.extend(self._rows_to_results(query_result, score_mode="distance"))
+
+        return sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
+
+    def text_search(
+        self,
+        query_text: str,
+        source_ids: list[str],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        query_text = query_text.strip()
+        if not query_text:
+            raise ValueError("Query text is required")
+        if top_k <= 0 or not source_ids:
+            return []
+
+        results: list[dict[str, Any]] = []
+        include = ["documents", "metadatas", "distances"]
+        n_results = max(top_k, 1)
+        for source_id in source_ids:
+            collection = self._collection(source_id)
+            collection_hybrid_search = getattr(collection, "hybrid_search", None)
+            if not callable(collection_hybrid_search):
+                raise RuntimeError("SeekDB collection does not support native full-text search")
+            query_result = collection_hybrid_search(
+                query={"where_document": {"$contains": query_text}, "n_results": n_results},
+                knn=None,
+                rank=None,
+                n_results=n_results,
+                include=include,
+            )
+            results.extend(self._rows_to_results(query_result, score_mode="similarity"))
 
         return sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
 

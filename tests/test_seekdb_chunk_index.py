@@ -105,7 +105,13 @@ class FakeCollection:
         return len(self.rows)
 
     def get(self, include=None, **kwargs):
-        return {"ids": list(self.rows)}
+        ids = list(self.rows)
+        result = {"ids": ids}
+        if include and "documents" in include:
+            result["documents"] = [self.rows[chunk_id]["document"] for chunk_id in ids]
+        if include and "metadatas" in include:
+            result["metadatas"] = [self.rows[chunk_id]["metadata"] for chunk_id in ids]
+        return result
 
     def refresh_index(self):
         self.refresh_calls += 1
@@ -202,6 +208,18 @@ def test_search_queries_seekdb_collections_and_reconstructs_chunks(tmp_path: Pat
     assert source_b_query["include"] == ["documents", "metadatas", "distances"]
 
 
+def test_get_source_chunks_reads_chunk_payloads_from_seekdb(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    stored = chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])
+    index.upsert_source_chunks("source-a", [stored])
+
+    loaded = index.get_source_chunks("source-a")
+
+    assert [item.id for item in loaded] == ["chunk-a"]
+    assert loaded[0].embedding == [0.1, 0.2, 0.3]
+    assert index.get_source_chunks("missing-source") == []
+
+
 def test_hybrid_search_calls_seekdb_hybrid_and_reconstructs_chunks(tmp_path: Path):
     index = SeekDBChunkIndex(tmp_path / "native.seekdb")
     index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
@@ -225,6 +243,24 @@ def test_hybrid_search_calls_seekdb_hybrid_and_reconstructs_chunks(tmp_path: Pat
             "include": ["documents", "metadatas", "distances"],
         }
     ]
+
+
+def test_text_search_uses_seekdb_fulltext_without_knn(tmp_path: Path):
+    index = SeekDBChunkIndex(tmp_path / "native.seekdb")
+    index.upsert_source_chunks("source-a", [chunk("chunk-a", "source-a", [0.1, 0.2, 0.3])])
+
+    results = index.text_search(query_text="TLS handshake", source_ids=["source-a"], top_k=1)
+
+    assert [item["chunk"].id for item in results] == ["chunk-a"]
+    assert results[0]["backend"] == "seekdb"
+    collection = FakeClient.instances[0].collections[index.collection_name("source-a")]
+    assert collection.hybrid_calls[-1] == {
+        "query": {"where_document": {"$contains": "TLS handshake"}, "n_results": 1},
+        "knn": None,
+        "rank": None,
+        "n_results": 1,
+        "include": ["documents", "metadatas", "distances"],
+    }
 
 
 def test_hybrid_search_preserves_native_relevance_score_order(tmp_path: Path):

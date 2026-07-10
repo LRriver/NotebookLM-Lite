@@ -1,8 +1,8 @@
-"""SeekDB repository wrapper.
+"""SQLite entity repository with a native SeekDB knowledge-chunk index.
 
-SQLite stores source and chunk payload metadata. Native SeekDB owns chunk vector
-indexing whenever embeddings are present; SQLite vector scoring is retained only
-as an explicit fallback path.
+In strict mode, SeekDB owns chunk vectors and retrieval. SQLite keeps source and
+chunk metadata without embeddings. SQLite vector scoring is retained only for
+the explicitly enabled compatibility fallback.
 """
 
 from __future__ import annotations
@@ -128,6 +128,7 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 content TEXT NOT NULL,
                 chunk_index INTEGER NOT NULL,
                 embedding TEXT,
+                vector_state TEXT NOT NULL DEFAULT 'legacy',
                 payload TEXT NOT NULL,
                 FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
             );
@@ -182,6 +183,13 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             CREATE INDEX IF NOT EXISTS idx_slide_deck_jobs_deck_id ON slide_deck_jobs(deck_id);
             """
         )
+        chunk_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(chunks)").fetchall()
+        }
+        if "vector_state" not in chunk_columns:
+            self._conn.execute(
+                "ALTER TABLE chunks ADD COLUMN vector_state TEXT NOT NULL DEFAULT 'legacy'"
+            )
         self._conn.commit()
 
     async def close(self) -> None:
@@ -235,11 +243,24 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
         if self.native_chunk_index is None and not self.allow_sqlite_vector_fallback:
             raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
 
-        with self._conn:
-            if self.native_chunk_index is not None:
-                self.native_chunk_index.upsert_source_chunks(source_id, [])
-            self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
-            self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+        previous_native_chunks: list[KnowledgeChunk] | None = None
+        if self.native_chunk_index is not None:
+            get_native_chunks = getattr(self.native_chunk_index, "get_source_chunks", None)
+            if callable(get_native_chunks):
+                previous_native_chunks = get_native_chunks(source_id)
+        try:
+            with self._conn:
+                if self.native_chunk_index is not None:
+                    self.native_chunk_index.upsert_source_chunks(source_id, [])
+                self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
+                self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+        except Exception:
+            if self.native_chunk_index is not None and previous_native_chunks is not None:
+                try:
+                    self.native_chunk_index.upsert_source_chunks(source_id, previous_native_chunks)
+                except Exception:
+                    logger.exception("Failed to restore SeekDB chunks after a source delete failure")
+            raise
         return True
 
     async def delete_source_metadata_only(self, source_id: str) -> None:
@@ -264,37 +285,47 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
                 raise RuntimeError("native SeekDB chunk writes require same-dimension embeddings for all chunks")
 
         native_chunks: list[KnowledgeChunk] | None = None
+        previous_native_chunks: list[KnowledgeChunk] | None = None
         if self.native_chunk_index is not None:
             native_chunks = self._native_eligible_chunks(chunks)
+            get_native_chunks = getattr(self.native_chunk_index, "get_source_chunks", None)
+            if callable(get_native_chunks):
+                previous_native_chunks = get_native_chunks(source_id)
 
-        with self._conn:
-            self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
-            self._conn.executemany(
-                """
-                INSERT INTO chunks(id, source_id, content, chunk_index, embedding, payload)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        chunk.id,
-                        chunk.source_id,
-                        chunk.content,
-                        chunk.chunk_index,
-                        json.dumps(chunk.embedding) if chunk.embedding is not None else None,
-                        _dump_model(chunk),
-                    )
-                    for chunk in chunks
-                ],
-            )
-            if native_chunks is not None:
-                self.native_chunk_index.upsert_source_chunks(source_id, native_chunks)
+        try:
+            with self._conn:
+                self._conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
+                self._conn.executemany(
+                    """
+                    INSERT INTO chunks(id, source_id, content, chunk_index, embedding, vector_state, payload)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [self._sqlite_chunk_row(chunk) for chunk in chunks],
+                )
+                if native_chunks is not None:
+                    self.native_chunk_index.upsert_source_chunks(source_id, native_chunks)
+        except Exception:
+            if native_chunks is not None and previous_native_chunks is not None:
+                try:
+                    self.native_chunk_index.upsert_source_chunks(source_id, previous_native_chunks)
+                except Exception:
+                    logger.exception("Failed to restore SeekDB chunks after a metadata transaction failure")
+            raise
 
     async def get_chunks(self, source_id: str) -> list[KnowledgeChunk]:
-        rows = self._conn.execute(
-            "SELECT payload FROM chunks WHERE source_id = ? ORDER BY chunk_index ASC",
-            (source_id,),
-        ).fetchall()
-        return [KnowledgeChunk.model_validate_json(row["payload"]) for row in rows]
+        if self.native_chunk_index is not None:
+            get_native_chunks = getattr(self.native_chunk_index, "get_source_chunks", None)
+            if callable(get_native_chunks):
+                try:
+                    chunks = get_native_chunks(source_id)
+                    if chunks or not self.allow_sqlite_vector_fallback:
+                        return chunks
+                except Exception:
+                    if not self.allow_sqlite_vector_fallback:
+                        raise
+        if not self.allow_sqlite_vector_fallback:
+            raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
+        return self._get_sqlite_chunks_sync(source_id)
 
     async def backfill_native_chunks(self) -> int:
         if self.native_chunk_index is None:
@@ -304,9 +335,73 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
 
         written = 0
         for source in await self.list_sources():
-            chunks = await self.get_chunks(source.id)
+            sqlite_rows = self._conn.execute(
+                "SELECT payload, vector_state FROM chunks WHERE source_id = ? ORDER BY chunk_index ASC",
+                (source.id,),
+            ).fetchall()
+            chunks = [KnowledgeChunk.model_validate_json(row["payload"]) for row in sqlite_rows]
+            if not chunks:
+                continue
+            reconciled_states = {"seekdb", "sqlite_fallback_reconciled"}
+            if all(row["vector_state"] in reconciled_states for row in sqlite_rows):
+                continue
             chunks_with_embeddings = self._native_eligible_chunks(chunks)
-            self.native_chunk_index.upsert_source_chunks(source.id, chunks_with_embeddings)
+            get_native_chunks = getattr(self.native_chunk_index, "get_source_chunks", None)
+            previous_native_chunks = get_native_chunks(source.id) if callable(get_native_chunks) else None
+            if len(chunks_with_embeddings) != len(chunks):
+                if all(row["vector_state"] == "legacy" for row in sqlite_rows) and self._chunks_match_without_vectors(
+                    chunks,
+                    previous_native_chunks or [],
+                ):
+                    with self._conn:
+                        self._conn.execute(
+                            "UPDATE chunks SET vector_state = 'seekdb' WHERE source_id = ?",
+                            (source.id,),
+                        )
+                    continue
+                logger.warning(
+                    "Clearing stale native chunks for fallback source %s because embeddings are missing or inconsistent",
+                    source.id,
+                )
+                try:
+                    self.native_chunk_index.upsert_source_chunks(source.id, [])
+                    with self._conn:
+                        self._conn.execute(
+                            """
+                            UPDATE chunks
+                            SET vector_state = 'sqlite_fallback_reconciled'
+                            WHERE source_id = ?
+                            """,
+                            (source.id,),
+                        )
+                except Exception:
+                    if previous_native_chunks is not None:
+                        try:
+                            self.native_chunk_index.upsert_source_chunks(source.id, previous_native_chunks)
+                        except Exception:
+                            logger.exception("Failed to restore SeekDB chunks after a backfill clear failure")
+                    raise
+                continue
+            try:
+                self.native_chunk_index.upsert_source_chunks(source.id, chunks_with_embeddings)
+                if not self.allow_sqlite_vector_fallback:
+                    with self._conn:
+                        for chunk in chunks:
+                            self._conn.execute(
+                                """
+                                UPDATE chunks
+                                SET embedding = NULL, payload = ?, vector_state = 'seekdb'
+                                WHERE id = ?
+                                """,
+                                (self._chunk_payload_without_embedding(chunk), chunk.id),
+                            )
+            except Exception:
+                if previous_native_chunks is not None:
+                    try:
+                        self.native_chunk_index.upsert_source_chunks(source.id, previous_native_chunks)
+                    except Exception:
+                        logger.exception("Failed to restore SeekDB chunks after a backfill failure")
+                raise
             written += len(chunks_with_embeddings)
         return written
 
@@ -320,6 +415,42 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
     ) -> list[dict]:
         if source_ids == []:
             return []
+        if self.native_chunk_index is not None and query_embedding is None:
+            query_text = query.strip()
+            if not query_text:
+                raise RuntimeError("native SeekDB full-text search requires query text")
+            requested_source_ids = source_ids if source_ids is not None else self._current_source_ids()
+            selected_source_ids = self._native_source_ids_with_chunks(requested_source_ids)
+            text_search = getattr(self.native_chunk_index, "text_search", None)
+            results: list[dict] = []
+            if not callable(text_search):
+                if not self.allow_sqlite_vector_fallback:
+                    raise RuntimeError("native SeekDB full-text search is unavailable")
+                selected_source_ids = []
+            elif selected_source_ids:
+                try:
+                    results.extend(text_search(query_text, selected_source_ids, top_k))
+                except Exception:
+                    if not self.allow_sqlite_vector_fallback:
+                        raise
+                    selected_source_ids = []
+            if self.allow_sqlite_vector_fallback:
+                native_source_id_set = set(selected_source_ids)
+                fallback_source_ids = [
+                    source_id for source_id in requested_source_ids if source_id not in native_source_id_set
+                ]
+                if fallback_source_ids:
+                    results.extend(
+                        await self._search_sqlite_chunk_rows(
+                            query,
+                            self._chunk_rows(fallback_source_ids),
+                            top_k,
+                            None,
+                            None,
+                        )
+                    )
+            results = sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
+            return await self._maybe_rerank(query_text, results, top_k, rerank_provider)
         if self.native_chunk_index is not None and query_embedding is not None:
             if not query_embedding:
                 if self.allow_sqlite_vector_fallback:
@@ -364,8 +495,6 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             results = sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
             return await self._maybe_rerank(query, results, top_k, rerank_provider)
 
-        if self.native_chunk_index is not None and not self.allow_sqlite_vector_fallback:
-            raise RuntimeError("native SeekDB vector search requires query embeddings")
         if self.native_chunk_index is None and not self.allow_sqlite_vector_fallback:
             raise RuntimeError(_NATIVE_UNAVAILABLE_MESSAGE)
 
@@ -398,8 +527,11 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             return []
         query_dimension = len(query_embedding)
         selected: list[str] = []
+        get_native_chunks = getattr(self.native_chunk_index, "get_source_chunks", None)
+        if not callable(get_native_chunks):
+            raise RuntimeError("native SeekDB chunk index cannot inspect stored chunks")
         for source_id in source_ids:
-            chunks = self._native_eligible_chunks(self._get_chunks_sync(source_id))
+            chunks = self._native_eligible_chunks(get_native_chunks(source_id))
             if not chunks:
                 continue
             if len(chunks[0].embedding or []) != query_dimension:
@@ -407,12 +539,51 @@ class SeekDBRepository(KnowledgeRepositoryInterface):
             selected.append(source_id)
         return selected
 
-    def _get_chunks_sync(self, source_id: str) -> list[KnowledgeChunk]:
+    def _native_source_ids_with_chunks(self, source_ids: list[str]) -> list[str]:
+        get_native_chunks = getattr(self.native_chunk_index, "get_source_chunks", None)
+        if not callable(get_native_chunks):
+            if self.allow_sqlite_vector_fallback:
+                return []
+            raise RuntimeError("native SeekDB chunk index cannot inspect stored chunks")
+        return [source_id for source_id in source_ids if get_native_chunks(source_id)]
+
+    def _get_sqlite_chunks_sync(self, source_id: str) -> list[KnowledgeChunk]:
         rows = self._conn.execute(
             "SELECT payload FROM chunks WHERE source_id = ? ORDER BY chunk_index ASC",
             (source_id,),
         ).fetchall()
         return [KnowledgeChunk.model_validate_json(row["payload"]) for row in rows]
+
+    @staticmethod
+    def _chunk_payload_without_embedding(chunk: KnowledgeChunk) -> str:
+        return chunk.model_copy(update={"embedding": None}).model_dump_json()
+
+    @staticmethod
+    def _chunks_match_without_vectors(
+        sqlite_chunks: list[KnowledgeChunk],
+        native_chunks: list[KnowledgeChunk],
+    ) -> bool:
+        if len(sqlite_chunks) != len(native_chunks):
+            return False
+
+        def signature(chunk: KnowledgeChunk) -> dict[str, Any]:
+            return chunk.model_dump(exclude={"embedding", "created_at"})
+
+        sqlite_signatures = {chunk.id: signature(chunk) for chunk in sqlite_chunks}
+        native_signatures = {chunk.id: signature(chunk) for chunk in native_chunks}
+        return sqlite_signatures == native_signatures
+
+    def _sqlite_chunk_row(self, chunk: KnowledgeChunk) -> tuple[Any, ...]:
+        persist_embedding = self.allow_sqlite_vector_fallback
+        return (
+            chunk.id,
+            chunk.source_id,
+            chunk.content,
+            chunk.chunk_index,
+            json.dumps(chunk.embedding) if persist_embedding and chunk.embedding is not None else None,
+            "sqlite_fallback" if persist_embedding else "seekdb",
+            _dump_model(chunk) if persist_embedding else self._chunk_payload_without_embedding(chunk),
+        )
 
     def _chunk_rows(self, source_ids: list[str] | None = None) -> list[sqlite3.Row]:
         if source_ids == []:

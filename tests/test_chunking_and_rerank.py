@@ -17,9 +17,14 @@ def sqlite_fallback_repo(path: Path) -> SeekDBRepository:
 class RecordingNativeIndex:
     def __init__(self) -> None:
         self.upserts = []
+        self.chunks_by_source = {}
 
     def upsert_source_chunks(self, source_id, chunks):
         self.upserts.append((source_id, chunks))
+        self.chunks_by_source[source_id] = list(chunks)
+
+    def get_source_chunks(self, source_id):
+        return list(self.chunks_by_source.get(source_id, []))
 
     def search(self, query_embedding, source_ids, top_k):
         return []
@@ -38,9 +43,14 @@ class HybridRecordingIndex:
     def __init__(self) -> None:
         self.calls = []
         self.upserts = []
+        self.chunks_by_source = {}
 
     def upsert_source_chunks(self, source_id, chunks):
         self.upserts.append((source_id, chunks))
+        self.chunks_by_source[source_id] = list(chunks)
+
+    def get_source_chunks(self, source_id):
+        return list(self.chunks_by_source.get(source_id, []))
 
     def hybrid_search(self, query_text, query_embedding, source_ids, top_k):
         self.calls.append((query_text, query_embedding, source_ids, top_k))
